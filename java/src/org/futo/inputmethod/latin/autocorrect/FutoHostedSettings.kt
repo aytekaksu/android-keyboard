@@ -10,7 +10,6 @@ package org.futo.inputmethod.latin.autocorrect
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.ParcelFileDescriptor
-import android.provider.UserDictionary
 import android.system.Os
 import androidx.core.content.edit
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -28,6 +27,11 @@ import org.florisboard.autocorrect.api.AutocorrectPluginUiItemKind
 import org.florisboard.autocorrect.api.AutocorrectPluginUiOption
 import org.florisboard.autocorrect.api.AutocorrectPluginUiPage
 import org.florisboard.autocorrect.api.AutocorrectPluginUiSurface
+import org.florisboard.autocorrect.api.AutocorrectUserDictionaryEditor
+import org.florisboard.autocorrect.api.AutocorrectUserDictionaryEntry
+import org.florisboard.autocorrect.api.AutocorrectUserDictionaryPage
+import org.florisboard.autocorrect.api.AutocorrectUserDictionaryReader
+import org.florisboard.autocorrect.api.AutocorrectUserDictionaryStatus
 import org.futo.inputmethod.latin.BuildConfig
 import org.futo.inputmethod.latin.LegacySwipeSetting
 import org.futo.inputmethod.latin.R
@@ -39,7 +43,6 @@ import org.futo.inputmethod.latin.uix.PreferenceUtils
 import org.futo.inputmethod.latin.uix.SHOW_EMOJI_SUGGESTIONS
 import org.futo.inputmethod.latin.uix.SUGGESTION_BLACKLIST
 import org.futo.inputmethod.latin.uix.SettingsKey
-import org.futo.inputmethod.latin.uix.UserDictionaryIO
 import org.futo.inputmethod.latin.uix.dataStore
 import org.futo.inputmethod.latin.uix.determineFileKind
 import org.futo.inputmethod.latin.uix.namePreferenceKeyFor
@@ -67,6 +70,7 @@ import java.util.Locale
 internal class FutoHostedSettings(
     private val context: Context,
     private val engine: FutoAutocorrectEngine,
+    private val hostUserDictionary: AutocorrectUserDictionaryReader,
 ) {
     private var languages = listOf(Locale.ENGLISH.toLanguageTag())
     private var modelLanguage = languages.first()
@@ -83,6 +87,10 @@ internal class FutoHostedSettings(
     private var personalLocale = languages.first()
     private var personalLanguages = languages
     private var personalPage = 0
+    private var personalDictionarySnapshot: AutocorrectUserDictionaryPage? = null
+    private val personalEntries: List<AutocorrectUserDictionaryEntry>
+        get() = personalDictionarySnapshot?.entries.orEmpty()
+    private var selectedPersonalWordId: Long? = null
     private var blacklistWord = ""
     private var selectedBlacklistWord: String? = null
     private var blacklistPage = 0
@@ -98,8 +106,15 @@ internal class FutoHostedSettings(
             true,
         )
         val models = ModelPaths.getModels(context).sortedBy { it.name.lowercase(Locale.ROOT) }
-        val personalWords = UserDictionaryIO(context).get()
-            .sortedWith(compareBy({ it.locale.orEmpty() }, { it.word.lowercase(Locale.ROOT) }))
+        val personalDictionary = loadPersonalDictionary()
+        val personalWords = personalEntries.map { it.toPersonalWord() }
+        if (personalDictionary.successful) {
+            selectedPersonalWord = selectedPersonalWordId
+                ?.let { selectedId -> personalEntries.firstOrNull { it.id == selectedId } }
+                ?.toPersonalWord()
+            if (selectedPersonalWord == null) selectedPersonalWordId = null
+        }
+        val personalSummary = personalDictionarySummary(personalDictionary.status, personalWords.size)
         val blacklist = setting(SUGGESTION_BLACKLIST).sortedWith(String.CASE_INSENSITIVE_ORDER)
         val modelOptions = setting(MODEL_OPTION_KEY)
         val hasPaidFuto = setting(FUTO_ALREADY_PAID)
@@ -119,7 +134,6 @@ internal class FutoHostedSettings(
             .takeIf { it >= 0 }
             ?.div(PAGE_SIZE)
             ?: 0
-        selectedPersonalWord = selectedPersonalWord?.takeIf(personalWords::contains)
         updatePersonalLanguages(personalWords)
         selectedBlacklistWord = selectedBlacklistWord?.takeIf(blacklist::contains)
         personalPage = personalPage.coerceIn(0, lastPage(personalWords.size))
@@ -143,7 +157,7 @@ internal class FutoHostedSettings(
                         navigation(
                             id = "openResources",
                             title = "Models and dictionaries",
-                            summary = "${models.size} model file(s), ${personalWords.size} personal word(s)",
+                            summary = "${models.size} model file(s), $personalSummary",
                             target = PAGE_RESOURCES,
                             icon = AutocorrectPluginUiIcon.MODEL,
                         ),
@@ -197,7 +211,7 @@ internal class FutoHostedSettings(
                             "Personal dictionary",
                             PAGE_PERSONAL,
                             AutocorrectPluginUiIcon.DICTIONARY,
-                            "${personalWords.size} word(s)",
+                            personalSummary,
                         ),
                         action(
                             id = "clearHistory",
@@ -208,7 +222,7 @@ internal class FutoHostedSettings(
                 ),
                 modelPage(models, modelOptions, transformerEnabled),
                 dictionaryPage(),
-                personalDictionaryPage(personalWords),
+                personalDictionaryPage(personalWords, personalDictionary.status),
                 blacklistPage(preferences, blacklist),
                 AutocorrectPluginUiPage(
                     id = PAGE_FUTO_SUPPORT,
@@ -342,6 +356,12 @@ internal class FutoHostedSettings(
         )
     }
 
+    fun onUiClosed() {
+        personalDictionarySnapshot = null
+        clearPersonalEditor()
+        personalPage = 0
+    }
+
     suspend fun setValue(itemId: String, value: String): Boolean {
         val preferences = PreferenceUtils.getDefaultSharedPreferences(context)
         val changed = when (itemId) {
@@ -436,7 +456,10 @@ internal class FutoHostedSettings(
         return changed
     }
 
-    suspend fun invoke(itemId: String): Boolean = when (itemId) {
+    suspend fun invoke(
+        itemId: String,
+        userDictionary: AutocorrectUserDictionaryEditor,
+    ): Boolean = when (itemId) {
         "clearHistory" -> engine.clearHistory()
         "modelDefault" -> setSelectedModelDefault()
         "modelDelete" -> deleteSelectedModel()
@@ -447,8 +470,8 @@ internal class FutoHostedSettings(
             clearPersonalEditor()
             true
         }
-        "personalSave" -> savePersonalWord()
-        "personalDelete" -> deletePersonalWord()
+        "personalSave" -> savePersonalWord(userDictionary)
+        "personalDelete" -> deletePersonalWord(userDictionary)
         "personalPrevious" -> {
             personalPage = (personalPage - 1).coerceAtLeast(0)
             true
@@ -707,8 +730,10 @@ internal class FutoHostedSettings(
 
     private fun personalDictionaryPage(
         words: List<PersonalWord>,
+        status: AutocorrectUserDictionaryStatus,
     ): AutocorrectPluginUiPage {
-        val pageWords = words.page(personalPage)
+        val pageEntries = personalEntries.page(personalPage)
+        val available = status == AutocorrectUserDictionaryStatus.OK
         val japanese = personalLocaleLanguage() == Locale.JAPANESE.language
         val chinese = personalLocaleLanguage() == Locale.CHINESE.language
         val editable = !chinese && selectedPersonalWord?.isChinese() != true
@@ -716,20 +741,21 @@ internal class FutoHostedSettings(
         return AutocorrectPluginUiPage(
             id = PAGE_PERSONAL,
             title = "Personal dictionary",
-            summary = "Personal words and shortcuts are stored in Android's user dictionary.",
-            items = listOf(
+            summary = if (available) {
+                "Personal words and shortcuts are managed by FlorisBoard."
+            } else {
+                personalDictionaryStatusSummary(status)
+            },
+            items = listOfNotNull(personalDictionaryStatusItem(status)) + listOf(
                 choice(
                     id = "personalSelection",
                     title = "Saved words",
                     summary = pageSummary(personalPage, words.size),
-                    value = selectedPersonalWord
-                        ?.let(words::indexOf)
-                        ?.takeIf { it >= 0 }
-                        ?.toString()
-                        .orEmpty(),
-                    options = pageWords.map { (index, word) ->
+                    value = selectedPersonalWordId?.toString().orEmpty(),
+                    options = pageEntries.map { (_, entry) ->
+                        val word = entry.toPersonalWord()
                         AutocorrectPluginUiOption(
-                            index.toString(),
+                            entry.id.toString(),
                             buildString {
                                 append(word.word)
                                 word.displayShortcut()
@@ -739,14 +765,14 @@ internal class FutoHostedSettings(
                             },
                         )
                     },
-                    enabled = pageWords.isNotEmpty(),
+                    enabled = available && pageEntries.isNotEmpty(),
                 ),
                 text(
                     id = "personalWord",
                     title = "Word",
                     value = personalWord,
                     summary = "The word to add or edit.",
-                    enabled = editable,
+                    enabled = available && editable,
                 ),
             ) + if (japanese) {
                 listOf(
@@ -759,7 +785,7 @@ internal class FutoHostedSettings(
                         } else {
                             "Use only hiragana and Japanese punctuation."
                         },
-                        enabled = editable,
+                        enabled = available && editable,
                     ),
                     choice(
                         id = "personalPos",
@@ -768,7 +794,7 @@ internal class FutoHostedSettings(
                         options = PosTypes.entries.mapIndexed { index, pos ->
                             AutocorrectPluginUiOption(index.toString(), pos.text)
                         },
-                        enabled = editable,
+                        enabled = available && editable,
                     ),
                 )
             } else {
@@ -778,7 +804,7 @@ internal class FutoHostedSettings(
                         title = "Shortcut",
                         value = personalShortcut,
                         summary = "Optional text which expands to the word.",
-                        enabled = editable,
+                        enabled = available && editable,
                     ),
                 )
             } + listOf(
@@ -791,7 +817,7 @@ internal class FutoHostedSettings(
                     ) + personalLanguageOptions(
                         includeChinese = selectedPersonalWord?.isChinese() == true,
                     ),
-                    enabled = editable,
+                    enabled = available && editable,
                 ),
             ) + listOfNotNull(
                 if (chinese || selectedPersonalWord?.isChinese() == true) {
@@ -808,31 +834,38 @@ internal class FutoHostedSettings(
                 action(
                     id = "personalSave",
                     title = if (selectedPersonalWord == null) "Add word" else "Save word",
-                    enabled = editable && validJapaneseReading && personalWord.isNotBlank(),
+                    enabled = available && editable &&
+                        validJapaneseReading && personalWord.isNotBlank(),
                     icon = AutocorrectPluginUiIcon.ADD,
                 ),
                 action(
                     id = "personalNew",
                     title = "Create another word",
-                    enabled = selectedPersonalWord != null ||
-                        personalWord.isNotEmpty() ||
-                        personalShortcut.isNotEmpty() ||
-                        personalReading.isNotEmpty() ||
-                        personalPos != PosTypes.NO_POS ||
-                        personalLocale != defaultPersonalLocale(),
+                    enabled = available && (
+                        selectedPersonalWord != null ||
+                            personalWord.isNotEmpty() ||
+                            personalShortcut.isNotEmpty() ||
+                            personalReading.isNotEmpty() ||
+                            personalPos != PosTypes.NO_POS ||
+                            personalLocale != defaultPersonalLocale()
+                        ),
                     icon = AutocorrectPluginUiIcon.ADD,
                 ),
                 action(
                     id = "personalDelete",
                     title = "Delete selected word",
                     confirmation = "Delete this personal dictionary entry?",
-                    enabled = editable && selectedPersonalWord != null,
+                    enabled = available && editable && selectedPersonalWord != null,
                 ),
-                pagingAction("personalPrevious", "Previous words", personalPage > 0),
+                pagingAction(
+                    "personalPrevious",
+                    "Previous words",
+                    available && personalPage > 0,
+                ),
                 pagingAction(
                     "personalNext",
                     "Next words",
-                    (personalPage + 1) * PAGE_SIZE < words.size,
+                    available && (personalPage + 1) * PAGE_SIZE < words.size,
                 ),
             ),
         )
@@ -1227,9 +1260,12 @@ internal class FutoHostedSettings(
         return true
     }
 
-    private suspend fun savePersonalWord(): Boolean {
+    private suspend fun savePersonalWord(
+        userDictionary: AutocorrectUserDictionaryEditor,
+    ): Boolean {
         val word = personalWord.trim().take(MAX_WORD_CHARS)
         if (
+            personalDictionarySnapshot?.status != AutocorrectUserDictionaryStatus.OK ||
             word.isEmpty() ||
             personalLocaleLanguage() == Locale.CHINESE.language ||
             selectedPersonalWord?.isChinese() == true ||
@@ -1238,51 +1274,71 @@ internal class FutoHostedSettings(
         ) {
             return false
         }
-        val dictionary = UserDictionaryIO(context)
         val targetLocale = personalLocale.takeUnless { it == ALL_LANGUAGES }?.let(::locale)
         val entry = if (targetLocale?.language == Locale.JAPANESE.language) {
             JapanesePersonalWord(
                 furigana = personalReading.trim().take(MAX_WORD_CHARS),
                 output = word,
                 pos = personalPos,
-            ).encode(targetLocale)
+            ).encode(targetLocale).copy(locale = targetLocale.toLanguageTag())
         } else {
             PersonalWord(
                 word = word,
                 frequency = 250,
-                locale = targetLocale?.toString(),
+                locale = targetLocale?.toLanguageTag(),
                 appId = 0,
                 shortcut = personalShortcut.trim().take(MAX_WORD_CHARS).ifEmpty { null },
             )
         }
-        val previous = selectedPersonalWord
-        if (entry != previous) {
-            val existingWords = dictionary.get()
-            val alreadyPresent = entry in existingWords
-            dictionary.put(listOf(entry))
-            if (entry !in dictionary.get()) return false
-            if (
-                previous != null &&
-                !removePersonalWordExact(previous) &&
-                previous in dictionary.get()
-            ) {
-                if (!alreadyPresent) removePersonalWordExact(entry)
-                return false
+        val duplicate = personalEntries
+            .filter { it.toPersonalWord() == entry }
+            .let { matches ->
+                matches.firstOrNull { it.id == selectedPersonalWordId } ?: matches.firstOrNull()
             }
+        if (duplicate != null) {
+            val selectedId = selectedPersonalWordId
+            if (selectedId != null && selectedId != duplicate.id) {
+                val deleteResult = userDictionary.deleteUserDictionaryEntry(selectedId)
+                if (!deleteResult.successful) {
+                    return dictionaryMutationFailed(deleteResult.status)
+                }
+                personalDictionarySnapshot = null
+                reload(userDictionaryChanged = true)
+            }
+            populatePersonalEditor(duplicate.toPersonalWord(), duplicate.id)
+            return true
         }
-        populatePersonalEditor(entry)
-        reload()
+        val result = userDictionary.upsertUserDictionaryEntry(
+            entry.toUserDictionaryEntry(selectedPersonalWordId ?: 0L),
+        )
+        if (!result.successful) {
+            return dictionaryMutationFailed(result.status)
+        }
+        result.entry?.let {
+            populatePersonalEditor(it.toPersonalWord(), it.id)
+        } ?: run {
+            selectedPersonalWord = null
+            selectedPersonalWordId = null
+        }
+        personalDictionarySnapshot = null
+        reload(userDictionaryChanged = true)
         return true
     }
 
-    private suspend fun deletePersonalWord(): Boolean {
+    private suspend fun deletePersonalWord(
+        userDictionary: AutocorrectUserDictionaryEditor,
+    ): Boolean {
+        if (personalDictionarySnapshot?.status != AutocorrectUserDictionaryStatus.OK) return false
         val selected = selectedPersonalWord ?: return false
+        val selectedId = selectedPersonalWordId ?: return false
         if (selected.isChinese()) return false
-        if (!removePersonalWordExact(selected) && selected in UserDictionaryIO(context).get()) {
-            return false
+        val result = userDictionary.deleteUserDictionaryEntry(selectedId)
+        if (!result.successful) {
+            return dictionaryMutationFailed(result.status)
         }
         clearPersonalEditor()
-        reload()
+        personalDictionarySnapshot = null
+        reload(userDictionaryChanged = true)
         return true
     }
 
@@ -1324,15 +1380,15 @@ internal class FutoHostedSettings(
     }
 
     private suspend fun selectPersonalWord(value: String): Boolean {
-        val words = UserDictionaryIO(context).get()
-            .sortedWith(compareBy({ it.locale.orEmpty() }, { it.word.lowercase(Locale.ROOT) }))
-        val selected = value.toIntOrNull()?.let(words::getOrNull) ?: return false
-        populatePersonalEditor(selected)
+        val selectedId = value.toLongOrNull() ?: return false
+        val selected = personalEntries.firstOrNull { it.id == selectedId } ?: return false
+        populatePersonalEditor(selected.toPersonalWord(), selected.id)
         return true
     }
 
     private fun clearPersonalEditor() {
         selectedPersonalWord = null
+        selectedPersonalWordId = null
         personalWord = ""
         personalShortcut = ""
         personalReading = ""
@@ -1343,9 +1399,93 @@ internal class FutoHostedSettings(
     private suspend fun reload(
         modelsChanged: Boolean = false,
         resourcesChanged: Boolean = false,
+        userDictionaryChanged: Boolean = false,
     ) {
-        engine.reloadSettings(modelsChanged, resourcesChanged)
+        engine.reloadSettings(modelsChanged, resourcesChanged, userDictionaryChanged)
     }
+
+    private suspend fun loadPersonalDictionary(): AutocorrectUserDictionaryPage {
+        personalDictionarySnapshot?.let { return it }
+        val result = hostUserDictionary.queryAllUserDictionary(emptyList()).let { page ->
+            page.copy(
+                entries = page.entries.sortedWith(
+                    compareBy(
+                        { it.languageTag.orEmpty() },
+                        { it.word.lowercase(Locale.ROOT) },
+                        { it.id },
+                    ),
+                ),
+            )
+        }
+        if (!result.status.isTransientDictionaryFailure()) {
+            personalDictionarySnapshot = result
+        }
+        return result
+    }
+
+    private fun dictionaryMutationFailed(status: AutocorrectUserDictionaryStatus): Boolean {
+        personalDictionarySnapshot = AutocorrectUserDictionaryPage(status)
+            .takeUnless { status.isTransientDictionaryFailure() }
+        return false
+    }
+
+    private fun AutocorrectUserDictionaryStatus.isTransientDictionaryFailure() =
+        this == AutocorrectUserDictionaryStatus.UNAVAILABLE ||
+            this == AutocorrectUserDictionaryStatus.INVALID
+
+    private fun personalDictionarySummary(
+        status: AutocorrectUserDictionaryStatus,
+        wordCount: Int,
+    ) = when (status) {
+        AutocorrectUserDictionaryStatus.OK -> "$wordCount personal word(s)"
+        AutocorrectUserDictionaryStatus.DENIED -> "personal dictionary disabled"
+        AutocorrectUserDictionaryStatus.UNAVAILABLE,
+        AutocorrectUserDictionaryStatus.INVALID -> "personal dictionary unavailable"
+    }
+
+    private fun personalDictionaryStatusSummary(status: AutocorrectUserDictionaryStatus) =
+        when (status) {
+            AutocorrectUserDictionaryStatus.OK ->
+                "Personal words and shortcuts are managed by FlorisBoard."
+            AutocorrectUserDictionaryStatus.DENIED ->
+                "Personal dictionary access is disabled in FlorisBoard."
+            AutocorrectUserDictionaryStatus.UNAVAILABLE ->
+                "The personal dictionary is unavailable from this keyboard host."
+            AutocorrectUserDictionaryStatus.INVALID ->
+                "The keyboard host returned invalid personal dictionary data."
+        }
+
+    private fun personalDictionaryStatusItem(status: AutocorrectUserDictionaryStatus) =
+        if (status == AutocorrectUserDictionaryStatus.OK) {
+            null
+        } else {
+            info(
+                id = "personalDictionaryStatus",
+                title = if (status == AutocorrectUserDictionaryStatus.DENIED) {
+                    "Personal dictionary disabled"
+                } else {
+                    "Personal dictionary unavailable"
+                },
+                summary = personalDictionaryStatusSummary(status),
+                icon = AutocorrectPluginUiIcon.INFO,
+            )
+        }
+
+    private fun AutocorrectUserDictionaryEntry.toPersonalWord() = PersonalWord(
+        word = word,
+        frequency = frequency,
+        locale = languageTag,
+        appId = 0,
+        shortcut = shortcut,
+    )
+
+    private fun PersonalWord.toUserDictionaryEntry(id: Long) = AutocorrectUserDictionaryEntry(
+        id = id,
+        word = word,
+        frequency = frequency,
+        languageTag = locale?.let(::localeFromString)?.toLanguageTag(),
+        shortcut = shortcut,
+    )
 
     private fun updateLanguages(languageTags: List<String>) {
         languages = languageTags
@@ -1385,8 +1525,9 @@ internal class FutoHostedSettings(
         }
     }
 
-    private fun populatePersonalEditor(entry: PersonalWord) {
+    private fun populatePersonalEditor(entry: PersonalWord, id: Long) {
         selectedPersonalWord = entry
+        selectedPersonalWordId = id
         personalLocale = entry.locale?.toPersonalLanguageTag() ?: ALL_LANGUAGES
         if (personalLocale != ALL_LANGUAGES && personalLocale !in personalLanguages) {
             personalLanguages = (personalLanguages + personalLocale).distinct()
@@ -1444,36 +1585,6 @@ internal class FutoHostedSettings(
     private fun String.isValidJapaneseReading() = all { character ->
         Character.UnicodeBlock.of(character) == Character.UnicodeBlock.HIRAGANA ||
             character in JAPANESE_READING_PUNCTUATION
-    }
-
-    private fun removePersonalWordExact(word: PersonalWord): Boolean {
-        val clauses = mutableListOf(
-            "${UserDictionary.Words.WORD} = ?",
-            "${UserDictionary.Words.FREQUENCY} = ?",
-            "${UserDictionary.Words.APP_ID} = ?",
-        )
-        val arguments = mutableListOf(
-            word.word,
-            word.frequency.toString(),
-            word.appId.toString(),
-        )
-        if (word.locale == null) {
-            clauses += "${UserDictionary.Words.LOCALE} IS NULL"
-        } else {
-            clauses += "${UserDictionary.Words.LOCALE} = ?"
-            arguments += word.locale
-        }
-        if (word.shortcut == null) {
-            clauses += "${UserDictionary.Words.SHORTCUT} IS NULL"
-        } else {
-            clauses += "${UserDictionary.Words.SHORTCUT} = ?"
-            arguments += word.shortcut
-        }
-        return context.contentResolver.delete(
-            UserDictionary.Words.CONTENT_URI,
-            clauses.joinToString(" AND "),
-            arguments.toTypedArray(),
-        ) > 0
     }
 
     private fun selectLanguage(value: String, select: (String) -> Unit): Boolean {

@@ -1,9 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-permission android:name="android.permission.READ_USER_DICTIONARY" />
-    <uses-permission android:name="android.permission.WRITE_USER_DICTIONARY" />
-
     <application
         android:allowBackup="false"
         android:label="@string/provider_name"
@@ -19,7 +16,7 @@
             </intent-filter>
             <meta-data
                 android:name="org.florisboard.autocorrect.api.PROTOCOL_VERSION"
-                android:value="3" />
+                android:value="4" />
         </service>
     </application>
 </manifest>

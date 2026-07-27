@@ -41,7 +41,6 @@ def prepareProviderAssets = tasks.register('prepareProviderAssets', Sync) {
     from(rootProject.file('java/assets')) {
         include 'spacing-and-punctuations/**'
         include 'futo-swipe/LICENSE.md'
-        include 'futo-swipe/scoring.json'
         include 'futo-swipe/honorable_sturgeon/metadata.json'
         include 'futo-swipe/honorable_sturgeon/model_fp32.pte'
         include 'futo-swipe/hungry_jellyfish/context_lm.pte'

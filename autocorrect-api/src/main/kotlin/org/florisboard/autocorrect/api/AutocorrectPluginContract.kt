@@ -27,7 +27,7 @@ import android.os.Bundle
 object AutocorrectPluginContract {
     const val ACTION_BIND_PROVIDER = "org.florisboard.autocorrect.api.action.BIND_PROVIDER"
     const val META_PROTOCOL_VERSION = "org.florisboard.autocorrect.api.PROTOCOL_VERSION"
-    const val PROTOCOL_VERSION = 3
+    const val PROTOCOL_VERSION = 4
 
     const val MSG_START_SESSION = 1
     const val MSG_SUGGEST = 2
@@ -42,11 +42,13 @@ object AutocorrectPluginContract {
     const val MSG_TEXT_EVENT = 11
     const val MSG_PLUGIN_UI_CLOSED = 12
     const val MSG_PLUGIN_UI_DOCUMENT = 13
+    const val MSG_HOST_USER_DICTIONARY_RESULT = 14
 
     const val MSG_SUGGESTIONS = 101
     const val MSG_REMOVE_RESULT = 102
     const val MSG_PLUGIN_UI_RESULT = 103
     const val MSG_FINISH_SESSION_RESULT = 104
+    const val MSG_HOST_USER_DICTIONARY_REQUEST = 105
 
     const val MAX_CONTEXT_CHARS = 512
     const val MAX_CANDIDATES = 16
@@ -57,6 +59,10 @@ object AutocorrectPluginContract {
     const val MAX_TRACE_POINT_COUNT = 48
     const val MAX_GESTURE_POINT_COUNT = 128
     const val MAX_BOOSTED_CODE_POINT_COUNT = 64
+    const val MAX_USER_DICTIONARY_PAGE_SIZE = 128
+    const val MAX_USER_DICTIONARY_TEXT_CHARS = 256
+    const val MAX_USER_DICTIONARY_LANGUAGE_TAG_CHARS = 64
+    const val MAX_USER_DICTIONARY_LANGUAGE_TAGS = 16
 }
 
 enum class AutocorrectCandidateKind {
