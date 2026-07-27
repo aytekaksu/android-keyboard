@@ -26,6 +26,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -243,7 +244,7 @@ class DataStoreHelper {
     @OptIn(DelicateCoroutinesApi::class)
     companion object {
         private var initialized: Boolean = false
-        private var currentPreferences: Preferences = preferencesOf()
+        private val currentPreferences = MutableStateFlow<Preferences>(preferencesOf())
 
         @JvmStatic
         fun init(context: Context) {
@@ -251,20 +252,18 @@ class DataStoreHelper {
             initialized = true
 
             runBlocking {
-                context.dataStore.data.first().let {
-                    currentPreferences = it
-                }
+                currentPreferences.value = context.dataStore.data.first()
             }
 
             GlobalScope.launch {
                 context.dataStore.data.collect {
-                    currentPreferences = it
+                    currentPreferences.value = it
                 }
             }
         }
 
         @JvmStatic
-        fun<T> getSettingOrNull(key: Preferences.Key<T>): T? = currentPreferences[key]
+        fun<T> getSettingOrNull(key: Preferences.Key<T>): T? = currentPreferences.value[key]
 
         @JvmStatic
         fun<T> getSetting(key: Preferences.Key<T>, default: T): T = getSettingOrNull(key) ?: default
@@ -274,6 +273,10 @@ class DataStoreHelper {
 
         @JvmStatic
         fun<T> getSetting(setting: SettingsKey<T>): T = getSettingOrNull(setting.key) ?: setting.default
+
+        suspend fun<T> awaitSetting(key: Preferences.Key<T>, value: T?) {
+            currentPreferences.first { preferences -> preferences[key] == value }
+        }
     }
 }
 
@@ -295,6 +298,13 @@ suspend fun <T> Context.setSetting(key: Preferences.Key<T>, value: T) {
     this.dataStore.edit { preferences ->
         preferences[key] = value
     }
+}
+
+suspend fun <T> Context.setSettingAndAwaitCache(key: Preferences.Key<T>, value: T) {
+    val committed = dataStore.edit { preferences ->
+        preferences[key] = value
+    }
+    DataStoreHelper.awaitSetting(key, committed[key])
 }
 
 
@@ -357,6 +367,10 @@ fun <T> Context.getSettingFlow(key: SettingsKey<T>): Flow<T> {
 
 suspend fun <T> Context.setSetting(key: SettingsKey<T>, value: T) {
     return setSetting(key.key, value)
+}
+
+suspend fun <T> Context.setSettingAndAwaitCache(key: SettingsKey<T>, value: T) {
+    return setSettingAndAwaitCache(key.key, value)
 }
 
 fun <T> LifecycleOwner.deferSetSetting(context: Context, key: SettingsKey<T>, value: T): Job {

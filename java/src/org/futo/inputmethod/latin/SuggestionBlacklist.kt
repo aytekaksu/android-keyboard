@@ -2,16 +2,20 @@ package org.futo.inputmethod.latin
 
 import android.content.Context
 import androidx.lifecycle.LifecycleCoroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.futo.inputmethod.latin.SuggestedWords.SuggestedWordInfo
 import org.futo.inputmethod.latin.settings.Settings
 import org.futo.inputmethod.latin.uix.SUGGESTION_BLACKLIST
+import org.futo.inputmethod.latin.uix.getSetting
 import org.futo.inputmethod.latin.uix.getSettingFlow
 import org.futo.inputmethod.latin.uix.settings.BadWordMode
 import org.futo.inputmethod.latin.uix.settings.shouldBlockWord
 
 class SuggestionBlacklist(val settings: Settings, val context: Context, val lifecycleScope: LifecycleCoroutineScope) {
-    private var userBlacklistedWords: Set<String> = setOf()
+    private val userBlacklistedWords =
+        MutableStateFlow(context.getSetting(SUGGESTION_BLACKLIST).toSet())
 
     private val mode get() = BadWordMode(
         language = settings.current.mLocale.language.lowercase(),
@@ -22,13 +26,17 @@ class SuggestionBlacklist(val settings: Settings, val context: Context, val life
     fun init() {
         lifecycleScope.launch {
             context.getSettingFlow(SUGGESTION_BLACKLIST).collect { value ->
-                userBlacklistedWords = value
+                userBlacklistedWords.value = value.toSet()
             }
         }
     }
 
+    suspend fun awaitRefresh(expected: Set<String>) {
+        userBlacklistedWords.first { it == expected }
+    }
+
     private fun isWordOk(word: String): Boolean {
-        if(word in userBlacklistedWords) return false
+        if(word in userBlacklistedWords.value) return false
         if(shouldBlockWord(mode, word)) return false
         return true
     }

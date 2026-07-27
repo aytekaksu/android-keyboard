@@ -288,7 +288,7 @@ android {
             versionNameSuffix "-unstable"
 
             buildConfigField "boolean", "IS_PLAYSTORE_BUILD", "false"
-            buildConfigField "boolean", "UPDATE_CHECKING", "true"
+            buildConfigField "boolean", "UPDATE_CHECKING", "false"
             buildConfigField "boolean", "UPDATE_CHECKING_NETWORK", "false"
             buildConfigField "String", "BRANCH", "\"${getBranch()}\""
             getIsDefault().set(true)
@@ -351,8 +351,8 @@ android {
         }
 
         unstable {
-            java.srcDirs = ['common/src', 'java/src', 'java/stable/java']
-            manifest.srcFile 'java/stable/AndroidManifest.xml'
+            java.srcDirs = ['common/src', 'java/src', 'java/unstable/java']
+            manifest.srcFile 'java/unstable/AndroidManifest.xml'
             res.srcDirs = ['java/unstable/res', translationsWithoutEngValues('translations/devbuild')]
         }
 
@@ -426,8 +426,6 @@ dependencies {
 
     stableImplementation 'ch.acra:acra-mail:5.11.1'
     stableImplementation 'ch.acra:acra-dialog:5.11.1'
-    unstableImplementation 'ch.acra:acra-mail:5.11.1'
-    unstableImplementation 'ch.acra:acra-dialog:5.11.1'
 
     implementation 'sh.calvin.reorderable:reorderable:3.0.0'
 
