@@ -7,6 +7,7 @@
 
 package org.futo.inputmethod.latin.autocorrect
 
+import android.content.pm.PackageManager
 import androidx.core.content.edit
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -67,7 +68,12 @@ class FlorisAutocorrectService : AutocorrectPluginService(), LifecycleOwner {
     }
 
     override fun isHostAuthorized(packageNames: Set<String>): Boolean {
-        return packageNames.any(ALLOWED_FLORISBOARD_PACKAGES::contains)
+        return packageNames.any { hostPackage ->
+            hostPackage in ALLOWED_FLORISBOARD_PACKAGES ||
+                (hostPackage.startsWith("$FLORISBOARD_PACKAGE.") &&
+                    packageManager.checkSignatures(hostPackage, packageName) ==
+                    PackageManager.SIGNATURE_MATCH)
+        }
     }
 
     override suspend fun onSuggestResult(
@@ -386,11 +392,12 @@ class FlorisAutocorrectService : AutocorrectPluginService(), LifecycleOwner {
     )
 
     private companion object {
+        const val FLORISBOARD_PACKAGE = "dev.patrickgold.florisboard"
         val ALLOWED_FLORISBOARD_PACKAGES = setOf(
-            "dev.patrickgold.florisboard",
-            "dev.patrickgold.florisboard.beta",
-            "dev.patrickgold.florisboard.debug",
-            "dev.patrickgold.florisboard.bench",
+            FLORISBOARD_PACKAGE,
+            "$FLORISBOARD_PACKAGE.beta",
+            "$FLORISBOARD_PACKAGE.debug",
+            "$FLORISBOARD_PACKAGE.bench",
         )
     }
 }

@@ -35,7 +35,8 @@ FlorisBoard does not bind the provider for password, raw, no-suggestion, incogni
 ineligible fields. Text context and keyboard geometry are bounded by the protocol. The FUTO process
 receives no target application package name. Persistent history is disabled when Android requests
 no personalized learning. The provider also rejects protocol messages from packages outside the
-four FlorisBoard release, beta, debug, and benchmark application IDs.
+four stock FlorisBoard application IDs. Custom IDs in the FlorisBoard application-ID family are
+accepted only when they share the provider's signing certificate.
 
 The service exists only while FlorisBoard has an eligible typing session or provider settings page
 open. Model preparation is lazy and scoped to that bound lifecycle; model imports and selection
