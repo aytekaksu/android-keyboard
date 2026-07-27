@@ -86,8 +86,12 @@ import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.GridLayoutManager.SpanSizeLookup
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -125,6 +129,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.nio.charset.StandardCharsets
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.GZIPInputStream
 import kotlin.math.max
 import kotlin.math.min
@@ -927,13 +932,18 @@ class PersistentEmojiState : PersistentActionState {
         var emojiMap: HashMap<String, EmojiItem> = HashMap()
 
         // Language name to translations
-        private val loadedTranslations: HashMap<String, EmojiTranslations> = hashMapOf()
-        private val loadedTranslatedShortcuts: HashMap<String, Map<String, String>> = hashMapOf()
+        private val loadedTranslations = ConcurrentHashMap<String, EmojiTranslations>()
+        private val loadedTranslatedShortcuts = ConcurrentHashMap<String, Map<String, String>>()
+        // These immutable bundled resources are shared for the lifetime of the app process.
+        private val resourceLoadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        private val resourceLoads = ConcurrentHashMap<String, Deferred<Unit>>()
 
         @JvmStatic
         fun getTranslationForLocale(locale: Locale): EmojiTranslations? {
             if(locale.language == "en") {
-                if("en_merged" in loadedTranslations) return loadedTranslations["en_merged"]
+                if (loadedTranslations.containsKey("en_merged")) {
+                    return loadedTranslations["en_merged"]
+                }
 
                 val fromUnicode = loadedTranslations["en"] ?: return null
                 val fromGemoji = loadedTranslations["en_gemoji"] ?: return null
@@ -950,7 +960,7 @@ class PersistentEmojiState : PersistentActionState {
             if(locales.size == 1) return getTranslationForLocale(locales[0])
 
             val key = locales.joinToString { it.language }
-            if(key in loadedTranslations) return loadedTranslations[key]
+            if (loadedTranslations.containsKey(key)) return loadedTranslations[key]
 
             val merged = locales.fold(EmojiTranslations(emptyMap())) { t, l ->
                 t + (getTranslationForLocale(l) ?: return null)
@@ -968,73 +978,111 @@ class PersistentEmojiState : PersistentActionState {
 
         @JvmStatic
         fun loadTranslationsForLanguage(context: Context, locale: Locale) {
+            translationLoad(context, locale)
+        }
+
+        @JvmStatic
+        suspend fun awaitTranslationsForLanguage(context: Context, locale: Locale) {
+            translationLoad(context, locale).await()
+        }
+
+        @JvmStatic
+        suspend fun loadEmojis(context: Context) {
+            emojiLoad(context).await()
+        }
+
+        private fun translationLoad(context: Context, locale: Locale): Deferred<Unit> {
             val language = locale.language
-            if (loadedTranslations.contains(language)) return
-            loadedTranslations.put(language, EmojiTranslations(hashMapOf()))
-
-            if(language == "en") {
-                // Shortcuts are sourced from gemoji
-                GlobalScope.launch(Dispatchers.IO) { loadEmojis(context) }
+            val applicationContext = context.applicationContext
+            return resourceLoad("translations:$language") {
+                val baseEmojiLoad = emojiLoad(applicationContext)
+                loadTranslations(applicationContext, language)
+                baseEmojiLoad.await()
             }
+        }
 
-            GlobalScope.launch(Dispatchers.IO) {
-                val inputStream = GZIPInputStream(context.resources.openRawResource(R.raw.emoji_i18n))
-
+        private suspend fun loadTranslations(context: Context, language: String) =
+            withContext(Dispatchers.IO) {
                 var data: JsonObject? = null
-                BufferedReader(InputStreamReader(inputStream, StandardCharsets.UTF_8)).use { reader ->
-                    while (true) {
-                        val line = reader.readLine()
-                        if (line == null) break
-                        if (line.startsWith("#")) {
-                            val lineLanguage = line.substring(1).trim()
-                            if (lineLanguage == language) {
-                                val jsonLine = reader.readLine()
-                                data = Json.parseToJsonElement(jsonLine).jsonObject
+                GZIPInputStream(context.resources.openRawResource(R.raw.emoji_i18n)).use { inputStream ->
+                    BufferedReader(InputStreamReader(inputStream, StandardCharsets.UTF_8)).use { reader ->
+                        while (true) {
+                            val line = reader.readLine() ?: break
+                            if (line.startsWith("#") && line.substring(1).trim() == language) {
+                                data = reader.readLine()?.let {
+                                    Json.parseToJsonElement(it).jsonObject
+                                }
                                 break
                             }
                         }
                     }
                 }
 
-                if (data != null) {
-                    val translations = data.map { entry ->
-                        val names = entry.value.jsonArray.map { it.jsonPrimitive.content }
-                        entry.key to EmojiNames(names)
-                    }.toMap()
-                    loadedTranslations.put(language, EmojiTranslations(translations))
+                val translations = data?.map { entry ->
+                    val names = entry.value.jsonArray.map { it.jsonPrimitive.content }
+                    entry.key to EmojiNames(names)
+                }?.toMap().orEmpty()
+                loadedTranslations[language] = EmojiTranslations(translations)
+                loadedTranslations.remove("en_merged")
 
-                    // Shortcuts are unique words
+                if (language != "en") {
+                    // Shortcuts are words which identify only one emoji in this language.
                     val wordCounts = hashMapOf<String, Int>()
-                    val words = translations.values.flatMap { it.names.flatMap { it.split(" ") }.toSet() }
-                    words.forEach {
-                        wordCounts[it] = (wordCounts[it] ?: 0) + 1
+                    val words = translations.values.flatMap {
+                        it.names.flatMap { name -> name.split(" ") }.toSet()
+                    }
+                    words.forEach { word ->
+                        wordCounts[word] = (wordCounts[word] ?: 0) + 1
                     }
 
                     val aliases = translations.flatMap { entry ->
                         val ttsName = entry.value.names.last()
-
                         val names = entry.value.names.flatMap { it.split(" ") }
-                        names.filter { wordCounts[it] == 1 && it.length > 1 }.map { it.lowercase() to entry.key } +
-                                if(!ttsName.contains(' ')) {
-                                    listOf(ttsName.lowercase() to entry.key)
-                                } else {
-                                    emptyList()
-                                }
+                        names.filter { wordCounts[it] == 1 && it.length > 1 }
+                            .map { it.lowercase() to entry.key } +
+                            if (!ttsName.contains(' ')) {
+                                listOf(ttsName.lowercase() to entry.key)
+                            } else {
+                                emptyList()
+                            }
                     }.reversed().toMap()
-
-                    if(language != "en") loadedTranslatedShortcuts.put(language, aliases)
+                    loadedTranslatedShortcuts[language] = aliases
                 }
             }
 
+        private fun emojiLoad(context: Context): Deferred<Unit> {
+            val applicationContext = context.applicationContext
+            return resourceLoad("emojis") {
+                loadEmojisNow(applicationContext)
+            }
         }
 
-        @JvmStatic
-        suspend fun loadEmojis(context: Context) = withContext(Dispatchers.IO) {
-            val stream = context.resources.openRawResource(R.raw.gemoji)
-            val text = stream.bufferedReader().readText()
+        private fun resourceLoad(
+            key: String,
+            load: suspend () -> Unit,
+        ): Deferred<Unit> {
+            resourceLoads[key]?.let { return it }
+            val created = resourceLoadScope.async(start = CoroutineStart.LAZY) { load() }
+            val existing = resourceLoads.putIfAbsent(key, created)
+            if (existing != null) {
+                created.cancel()
+                return existing
+            }
+            created.invokeOnCompletion { error ->
+                if (error != null) {
+                    resourceLoads.remove(key, created)
+                }
+            }
+            created.start()
+            return created
+        }
 
+        private suspend fun loadEmojisNow(context: Context) = withContext(Dispatchers.IO) {
+            val text = context.resources.openRawResource(R.raw.gemoji).bufferedReader().use {
+                it.readText()
+            }
             val supplementalEmoteText = context.resources.openRawResource(R.raw.supplemental_emotes)
-                .bufferedReader().readText()
+                .bufferedReader().use { it.readText() }
 
             val compatTypeface = context.compatEmojiTypeface
 

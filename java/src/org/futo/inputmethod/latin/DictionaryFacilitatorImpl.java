@@ -95,15 +95,53 @@ public class DictionaryFacilitatorImpl implements DictionaryFacilitator {
             new Class[] { Context.class, Locale.class, File.class, String.class, String.class };
 
 
-    public static SwipeDecoderDictionary swipeDecoderDictionary = null;
+    private static final Object sSwipeDecoderLock = new Object();
+    public static volatile SwipeDecoderDictionary swipeDecoderDictionary = null;
+    private static volatile boolean sTriesAreInvalid = false;
+    private static int sSwipeDecoderOwnerCount = 0;
 
     private LruCache<String, Boolean> mValidSpellingWordReadCache;
     private LruCache<String, Boolean> mValidSpellingWordWriteCache;
+    private boolean mOwnsSwipeDecoder = false;
 
-    private static boolean sTriesAreInvalid = false;
     public static void onAnyBinaryDictionaryClosed() {
         sTriesAreInvalid = true;
-        swipeDecoderDictionary.invalidateTries();
+        final SwipeDecoderDictionary currentSwipeDecoder = swipeDecoderDictionary;
+        if (currentSwipeDecoder != null) {
+            currentSwipeDecoder.invalidateTries();
+        }
+    }
+
+    private void acquireSwipeDecoder(final Context context) {
+        synchronized (sSwipeDecoderLock) {
+            if (mOwnsSwipeDecoder) {
+                return;
+            }
+            if (swipeDecoderDictionary == null) {
+                final Context applicationContext = context.getApplicationContext();
+                swipeDecoderDictionary = new SwipeDecoderDictionary(
+                        applicationContext != null ? applicationContext : context, Locale.ENGLISH);
+            }
+            ++sSwipeDecoderOwnerCount;
+            mOwnsSwipeDecoder = true;
+        }
+    }
+
+    private void releaseSwipeDecoder() {
+        synchronized (sSwipeDecoderLock) {
+            if (!mOwnsSwipeDecoder) {
+                return;
+            }
+            mOwnsSwipeDecoder = false;
+            if (--sSwipeDecoderOwnerCount == 0) {
+                final SwipeDecoderDictionary decoderToClose = swipeDecoderDictionary;
+                swipeDecoderDictionary = null;
+                sTriesAreInvalid = false;
+                if (decoderToClose != null) {
+                    decoderToClose.close();
+                }
+            }
+        }
     }
 
     @Override
@@ -368,9 +406,7 @@ public class DictionaryFacilitatorImpl implements DictionaryFacilitator {
             @Nullable final DictionaryInitializationListener listener) {
 
         mPrevKeyboard = null;
-        if(DictionaryFacilitatorImpl.swipeDecoderDictionary == null) {
-            DictionaryFacilitatorImpl.swipeDecoderDictionary = new SwipeDecoderDictionary(context, Locale.ENGLISH);
-        }
+        acquireSwipeDecoder(context);
 
         final HashMap<Locale, ArrayList<String>> existingDictionariesToCleanup = new HashMap<>();
         // TODO: Make subDictTypesToUse configurable by resource or a static final list.
@@ -566,10 +602,14 @@ public class DictionaryFacilitatorImpl implements DictionaryFacilitator {
             mDictionaryGroups = new ArrayList<>();
         }
 
-        for(DictionaryGroup dictionaryGroupToClose : dictionaryGroupsToClose) {
-            for (final String dictType : ALL_DICTIONARY_TYPES) {
-                dictionaryGroupToClose.closeDict(dictType);
+        try {
+            for(DictionaryGroup dictionaryGroupToClose : dictionaryGroupsToClose) {
+                for (final String dictType : ALL_DICTIONARY_TYPES) {
+                    dictionaryGroupToClose.closeDict(dictType);
+                }
             }
+        } finally {
+            releaseSwipeDecoder();
         }
     }
 

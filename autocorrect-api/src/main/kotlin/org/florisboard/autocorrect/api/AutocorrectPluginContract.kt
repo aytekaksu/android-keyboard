@@ -27,8 +27,7 @@ import android.os.Bundle
 object AutocorrectPluginContract {
     const val ACTION_BIND_PROVIDER = "org.florisboard.autocorrect.api.action.BIND_PROVIDER"
     const val META_PROTOCOL_VERSION = "org.florisboard.autocorrect.api.PROTOCOL_VERSION"
-    const val META_SETTINGS_ACTIVITY = "org.florisboard.autocorrect.api.SETTINGS_ACTIVITY"
-    const val PROTOCOL_VERSION = 1
+    const val PROTOCOL_VERSION = 2
 
     const val MSG_START_SESSION = 1
     const val MSG_SUGGEST = 2
@@ -42,6 +41,7 @@ object AutocorrectPluginContract {
     const val MSG_INVOKE_PLUGIN_UI_ACTION = 10
     const val MSG_TEXT_EVENT = 11
     const val MSG_PLUGIN_UI_CLOSED = 12
+    const val MSG_PLUGIN_UI_DOCUMENT = 13
 
     const val MSG_SUGGESTIONS = 101
     const val MSG_REMOVE_RESULT = 102
@@ -78,6 +78,23 @@ enum class AutocorrectAcceptanceKind {
     GESTURE,
 }
 
+/** Host keyboard shift state at the time a suggestion request is made. */
+enum class AutocorrectCapsMode {
+    UNSPECIFIED,
+    UNSHIFTED,
+    SHIFTED_MANUAL,
+    SHIFTED_AUTOMATIC,
+    CAPS_LOCK,
+}
+
+/** Normalized editor behavior traits. These values never identify the target application. */
+object AutocorrectEditorFlags {
+    const val CODE_LIKE = 1 shl 0
+    const val WEB_FIELD = 1 shl 1
+
+    internal const val ALL = CODE_LIKE or WEB_FIELD
+}
+
 data class AutocorrectSession(
     val sessionId: Long,
     val primaryLanguageTag: String,
@@ -85,6 +102,7 @@ data class AutocorrectSession(
     val inputType: Int,
     val capsMode: Int,
     val allowPersonalizedLearning: Boolean = false,
+    val editorFlags: Int = 0,
 ) {
     fun toBundle() = Bundle().apply {
         putLong(Keys.SESSION_ID, sessionId)
@@ -93,6 +111,7 @@ data class AutocorrectSession(
         putInt(Keys.INPUT_TYPE, inputType)
         putInt(Keys.CAPS_MODE, capsMode)
         putBoolean(Keys.ALLOW_PERSONALIZED_LEARNING, allowPersonalizedLearning)
+        putInt(Keys.EDITOR_FLAGS, editorFlags and AutocorrectEditorFlags.ALL)
     }
 
     companion object {
@@ -103,6 +122,7 @@ data class AutocorrectSession(
             inputType = bundle.getInt(Keys.INPUT_TYPE),
             capsMode = bundle.getInt(Keys.CAPS_MODE),
             allowPersonalizedLearning = bundle.getBoolean(Keys.ALLOW_PERSONALIZED_LEARNING),
+            editorFlags = bundle.getInt(Keys.EDITOR_FLAGS) and AutocorrectEditorFlags.ALL,
         )
     }
 }
@@ -120,6 +140,7 @@ data class AutocorrectRequest(
     val maxCandidateCount: Int,
     val allowPossiblyOffensive: Boolean,
     val inputTrace: AutocorrectInputTrace = AutocorrectInputTrace.Empty,
+    val capsMode: AutocorrectCapsMode = AutocorrectCapsMode.UNSPECIFIED,
 ) {
     init {
         require(text.length <= AutocorrectPluginContract.MAX_CONTEXT_CHARS)
@@ -138,6 +159,7 @@ data class AutocorrectRequest(
         putInt(Keys.MAX_CANDIDATE_COUNT, maxCandidateCount.coerceIn(1, AutocorrectPluginContract.MAX_CANDIDATES))
         putBoolean(Keys.ALLOW_POSSIBLY_OFFENSIVE, allowPossiblyOffensive)
         putBundle(Keys.INPUT_TRACE, inputTrace.toBundle())
+        putString(Keys.REQUEST_CAPS_MODE, capsMode.name)
     }
 
     companion object {
@@ -156,6 +178,10 @@ data class AutocorrectRequest(
             allowPossiblyOffensive = bundle.getBoolean(Keys.ALLOW_POSSIBLY_OFFENSIVE),
             inputTrace = bundle.getBundle(Keys.INPUT_TRACE)?.toAutocorrectInputTrace()
                 ?: AutocorrectInputTrace.Empty,
+            capsMode = bundle.enumValueOrDefault(
+                Keys.REQUEST_CAPS_MODE,
+                AutocorrectCapsMode.UNSPECIFIED,
+            ),
         )
     }
 }
@@ -168,6 +194,7 @@ data class AutocorrectCandidate(
     val kind: AutocorrectCandidateKind = AutocorrectCandidateKind.COMPLETION,
     val autoCommit: Boolean = false,
     val removable: Boolean = false,
+    val visible: Boolean = true,
     val replacementStart: Int = -1,
     val replacementEnd: Int = -1,
     val separatorBehavior: AutocorrectSeparatorBehavior = AutocorrectSeparatorBehavior.DEFAULT,
@@ -183,6 +210,7 @@ data class AutocorrectCandidate(
         putString(Keys.KIND, kind.name)
         putBoolean(Keys.AUTO_COMMIT, autoCommit)
         putBoolean(Keys.REMOVABLE, removable)
+        putBoolean(Keys.VISIBLE, visible)
         putInt(Keys.REPLACEMENT_START, replacementStart)
         putInt(Keys.REPLACEMENT_END, replacementEnd)
         putString(Keys.SEPARATOR_BEHAVIOR, separatorBehavior.name)
@@ -204,6 +232,7 @@ data class AutocorrectCandidate(
                 kind = bundle.enumValueOrDefault(Keys.KIND, AutocorrectCandidateKind.COMPLETION),
                 autoCommit = bundle.getBoolean(Keys.AUTO_COMMIT),
                 removable = bundle.getBoolean(Keys.REMOVABLE),
+                visible = bundle.getBoolean(Keys.VISIBLE, true),
                 replacementStart = bundle.getInt(Keys.REPLACEMENT_START, -1),
                 replacementEnd = bundle.getInt(Keys.REPLACEMENT_END, -1),
                 separatorBehavior = bundle.enumValueOrDefault(
@@ -218,9 +247,11 @@ data class AutocorrectCandidate(
 data class AutocorrectSuggestionResult(
     val candidates: List<AutocorrectCandidate>,
     val boostedCodePoints: Set<Int> = emptySet(),
+    val handled: Boolean = true,
 ) {
     companion object {
         val Empty = AutocorrectSuggestionResult(emptyList())
+        val Unhandled = AutocorrectSuggestionResult(emptyList(), handled = false)
     }
 }
 
@@ -248,6 +279,7 @@ internal fun suggestionResultToBundle(
             .toList()
             .toIntArray(),
     )
+    putBoolean(Keys.HANDLED, result.handled)
 }
 
 @Suppress("DEPRECATION")
@@ -263,6 +295,7 @@ fun suggestionResultFromBundle(bundle: Bundle): Pair<Long, AutocorrectSuggestion
     return bundle.getLong(Keys.REQUEST_ID) to AutocorrectSuggestionResult(
         candidates = candidates,
         boostedCodePoints = boostedCodePoints,
+        handled = bundle.getBoolean(Keys.HANDLED, true),
     )
 }
 
@@ -303,6 +336,7 @@ internal object Keys {
     const val INPUT_TYPE = "inputType"
     const val CAPS_MODE = "capsMode"
     const val ALLOW_PERSONALIZED_LEARNING = "allowPersonalizedLearning"
+    const val EDITOR_FLAGS = "editorFlags"
     const val TEXT = "text"
     const val SELECTION_START = "selectionStart"
     const val SELECTION_END = "selectionEnd"
@@ -313,6 +347,7 @@ internal object Keys {
     const val MAX_CANDIDATE_COUNT = "maxCandidateCount"
     const val ALLOW_POSSIBLY_OFFENSIVE = "allowPossiblyOffensive"
     const val INPUT_TRACE = "inputTrace"
+    const val REQUEST_CAPS_MODE = "requestCapsMode"
     const val ID = "id"
     const val ACCEPTANCE_KIND = "acceptanceKind"
     const val SECONDARY_TEXT = "secondaryText"
@@ -320,11 +355,13 @@ internal object Keys {
     const val KIND = "kind"
     const val AUTO_COMMIT = "autoCommit"
     const val REMOVABLE = "removable"
+    const val VISIBLE = "visible"
     const val REPLACEMENT_START = "replacementStart"
     const val REPLACEMENT_END = "replacementEnd"
     const val SEPARATOR_BEHAVIOR = "separatorBehavior"
     const val CANDIDATES = "candidates"
     const val BOOSTED_CODE_POINTS = "boostedCodePoints"
+    const val HANDLED = "handled"
     const val REMOVED = "removed"
 }
 

@@ -26,6 +26,7 @@ import android.view.inputmethod.EditorInfo;
 
 import androidx.annotation.Nullable;
 
+import org.florisboard.autocorrect.api.AutocorrectEditorFlags;
 import org.futo.inputmethod.latin.common.StringUtils;
 import org.futo.inputmethod.latin.utils.InputTypeUtils;
 
@@ -73,6 +74,11 @@ public final class InputAttributes {
 
     public InputAttributes(final EditorInfo editorInfo, final boolean isFullscreenMode,
             final String packageNameForPrivateImeOptions) {
+        this(editorInfo, isFullscreenMode, packageNameForPrivateImeOptions, 0);
+    }
+
+    public InputAttributes(final EditorInfo editorInfo, final boolean isFullscreenMode,
+            final String packageNameForPrivateImeOptions, final int editorFlags) {
         mEditorInfo = editorInfo;
         mPackageNameForPrivateImeOptions = packageNameForPrivateImeOptions;
         mTargetApplicationPackageName = null != editorInfo ? editorInfo.packageName : null;
@@ -85,7 +91,9 @@ public final class InputAttributes {
         mIsUriField = InputTypeUtils.isUriType(inputType);
 
         final int codeFieldType = getCodeFieldType(editorInfo);
-        mIsCodeField = codeFieldType != NOT_A_CODE_FIELD;
+        mIsCodeField = codeFieldType != NOT_A_CODE_FIELD
+                || (editorFlags & AutocorrectEditorFlags.CODE_LIKE) != 0;
+        final boolean noComposition = codeFieldType == CODE_FIELD_NO_COMPOSITION;
         if (inputClass != InputType.TYPE_CLASS_TEXT) {
             // If we are not looking at a TYPE_CLASS_TEXT field, the following strange
             // cases may arise, so we do a couple validity checks for them. If it's a
@@ -107,10 +115,10 @@ public final class InputAttributes {
             mShouldInsertSpacesAutomatically = false;
             mDisableGestureFloatingPreviewText = false;
             mIsGeneralTextInput = false;
-            mNoLearning = false;
+            mNoLearning = mIsCodeField;
             mIsEmailField = false;
             mSendKeyEventsMode = true;
-            mIsWebField = false;
+            mIsWebField = (editorFlags & AutocorrectEditorFlags.WEB_FIELD) != 0;
             mLocaleOverride = null;
             mLayoutOverride = null;
             return;
@@ -134,7 +142,7 @@ public final class InputAttributes {
         // Make sure that passwords are not displayed in {@link SuggestionStripView}.
         final boolean shouldSuppressSuggestions = mIsPasswordField
                 || forceNoSuggestionsByPrivateFlag
-                || codeFieldType == CODE_FIELD_NO_COMPOSITION;
+                || noComposition;
         mShouldShowSuggestions = !shouldSuppressSuggestions;
 
         mShouldInsertSpacesAutomatically = InputTypeUtils.isAutoSpaceFriendlyType(inputType)
@@ -154,10 +162,11 @@ public final class InputAttributes {
                 || (flagNoSuggestions && !flagAutoCorrect && variation != InputType.TYPE_TEXT_VARIATION_WEB_EDIT_TEXT)
                 || mIsCodeField;
 
-        // TODO: Firefox-based browsers don't set it to WEB_EDIT_TEXT
-        // Currently only checking against Firefox package name
+        // Firefox does not report WEB_EDIT_TEXT. A service adapter supplies the equivalent
+        // normalized trait because it intentionally does not receive the target package name.
         mIsWebField = (variation == InputType.TYPE_TEXT_VARIATION_WEB_EDIT_TEXT)
-                || Objects.equals(editorInfo.packageName, "org.mozilla.firefox");
+                || Objects.equals(editorInfo.packageName, "org.mozilla.firefox")
+                || (editorFlags & AutocorrectEditorFlags.WEB_FIELD) != 0;
 
         // If it's a browser edit field and auto correct is not ON explicitly, then
         // disable auto correction, but keep suggestions on.

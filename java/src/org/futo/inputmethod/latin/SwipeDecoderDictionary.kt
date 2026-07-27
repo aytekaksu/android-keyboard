@@ -13,7 +13,6 @@ import org.futo.inputmethod.keyboard.Keyboard
 import org.futo.inputmethod.keyboard.internal.isAlphabet
 import org.futo.inputmethod.latin.common.ComposedData
 import org.futo.inputmethod.latin.common.InputPointers
-import org.futo.inputmethod.latin.settings.Settings
 import org.futo.inputmethod.latin.settings.SettingsValues
 import org.futo.inputmethod.latin.settings.SettingsValuesForSuggestion
 import org.futo.inputmethod.latin.uix.SettingsKey
@@ -307,15 +306,7 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
         }
 
         @JvmStatic
-        fun canBeUsed(): Boolean {
-            val settings = Settings.getInstance().current
-            if(!settings.mGestureInputEnabled) {
-                Log.d("SwipeDecoderDictionary", "Inactive because gesture input is disabled.")
-                return false
-            }
-
-            return true
-        }
+        fun canBeUsed() = true
     }
 
     var decoder: SwipeDecoder? = null
@@ -548,13 +539,29 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
         applyPendingLayoutInfo()
     }
 
+    override fun close() {
+        synchronized(BinaryDictionary.sTrieUsageLock) {
+            val decoderToClose = decoder
+            decoder = null
+            pendingLayoutInfo = null
+            prevKeyboard = null
+            appliedLayoutInfo = LayoutInfoForModel.DEFAULT
+            appliedTries = null
+            appliedTrieWeights = FloatArray(0)
+            appliedScoring.value = SwipeDecoder.Scoring(0.0f, 0.0f, 0.0f, 0.0f)
+            decoderToClose?.close()
+        }
+    }
+
     override fun isInDictionary(word: String?): Boolean {
         return false
     }
 
     fun invalidateTries() {
-        if(appliedTries?.isEmpty() != false) return
-        decoder?.setMode(tries = emptyList<Long>().toLongArray())
-        appliedTries = null
+        synchronized(BinaryDictionary.sTrieUsageLock) {
+            if(appliedTries?.isEmpty() != false) return
+            decoder?.setMode(tries = LongArray(0))
+            appliedTries = null
+        }
     }
 }

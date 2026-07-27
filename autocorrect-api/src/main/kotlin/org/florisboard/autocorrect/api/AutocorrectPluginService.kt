@@ -27,8 +27,9 @@ import android.os.Process
 import android.os.RemoteException
 import android.util.Log
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -37,6 +38,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.yield
 
 private const val AUTOCORRECT_PLUGIN_TAG = "AutocorrectPlugin"
 
@@ -56,6 +58,7 @@ abstract class AutocorrectPluginService : Service() {
     private var sessionJob: Job? = null
     private var suggestionJob: Job? = null
     private var activeSessionId: Long? = null
+    private var uiLanguageTags = emptyList<String>()
     @Volatile private var uiClient: Messenger? = null
     private val predictionGuard = Mutex()
     private val uiMutationGuard = Mutex()
@@ -114,13 +117,16 @@ abstract class AutocorrectPluginService : Service() {
     protected open suspend fun onFinishSession(sessionId: Long) = Unit
 
     /** Returns declarative pages which FlorisBoard can render in its app and keyboard UIs. */
-    protected open suspend fun onGetPluginUi(): AutocorrectPluginUi? = null
+    protected open suspend fun onGetPluginUi(languageTags: List<String>): AutocorrectPluginUi? = null
 
     /** Persists one host-rendered setting. Return false if the item or value is invalid. */
     protected open suspend fun onSetPluginUiValue(itemId: String, value: String): Boolean = false
 
     /** Runs one explicit user action from a host-rendered provider page. */
     protected open suspend fun onInvokePluginUiAction(itemId: String): Boolean = false
+
+    /** Reads or writes a document selected through the host's system document picker. */
+    protected open suspend fun onPluginUiDocument(document: AutocorrectPluginDocument): Boolean = false
 
     /** Called when the last host-rendered provider page closes. */
     protected open suspend fun onPluginUiClosed() = Unit
@@ -144,7 +150,12 @@ abstract class AutocorrectPluginService : Service() {
 
     private inner class IncomingHandler : Handler(Looper.getMainLooper()) {
         override fun handleMessage(message: Message) {
-            if (!isAuthorized(message)) return
+            if (!isAuthorized(message)) {
+                if (message.what == AutocorrectPluginContract.MSG_PLUGIN_UI_DOCUMENT) {
+                    runCatching { message.data.pluginUiDocument()?.close() }
+                }
+                return
+            }
             when (message.what) {
                 AutocorrectPluginContract.MSG_START_SESSION -> {
                     val session = AutocorrectSession.fromBundle(message.data)
@@ -171,7 +182,7 @@ abstract class AutocorrectPluginService : Service() {
                             throw error
                         } catch (error: Exception) {
                             Log.e(AUTOCORRECT_PLUGIN_TAG, "Suggestion request failed", error)
-                            AutocorrectSuggestionResult.Empty
+                            AutocorrectSuggestionResult.Unhandled
                         }
                         replyTo.sendSafely(
                             AutocorrectPluginContract.MSG_SUGGESTIONS,
@@ -255,6 +266,7 @@ abstract class AutocorrectPluginService : Service() {
                     }
                 }
                 AutocorrectPluginContract.MSG_GET_PLUGIN_UI -> {
+                    uiLanguageTags = message.data.pluginUiLanguageTags()
                     replyWithPluginUi(message, successful = true)
                 }
                 AutocorrectPluginContract.MSG_SET_PLUGIN_UI_VALUE -> {
@@ -270,13 +282,39 @@ abstract class AutocorrectPluginService : Service() {
                         onInvokePluginUiAction(itemId)
                     }
                 }
+                AutocorrectPluginContract.MSG_PLUGIN_UI_DOCUMENT -> {
+                    val document = message.data.pluginUiDocument() ?: return
+                    replyWithPluginUi(
+                        message = message,
+                        cleanup = document::close,
+                        operation = { onPluginUiDocument(document) },
+                    )
+                }
                 AutocorrectPluginContract.MSG_PLUGIN_UI_CLOSED -> {
-                    uiClient = null
-                    serviceScope.launch {
+                    enqueuePluginUiOperation {
+                        uiClient = null
                         onPluginUiClosed()
                     }
                 }
                 else -> super.handleMessage(message)
+            }
+        }
+
+        private fun enqueuePluginUiOperation(
+            cleanup: () -> Unit = {},
+            operation: suspend () -> Unit,
+        ) {
+            serviceScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                try {
+                    uiMutationGuard.withLock {
+                        yield()
+                        predictionGuard.withLock {
+                            operation()
+                        }
+                    }
+                } finally {
+                    runCatching(cleanup)
+                }
             }
         }
 
@@ -291,19 +329,35 @@ abstract class AutocorrectPluginService : Service() {
         private fun replyWithPluginUi(
             message: Message,
             successful: Boolean? = null,
+            cleanup: () -> Unit = {},
             operation: suspend () -> Boolean = { true },
         ) {
             val requestId = message.data.pluginUiRequestId()
-            val replyTo = message.replyTo ?: return
-            uiClient = replyTo
-            serviceScope.launch {
-                uiMutationGuard.withLock {
-                    val result = successful ?: operation()
-                    replyTo.sendSafely(
-                        AutocorrectPluginContract.MSG_PLUGIN_UI_RESULT,
-                        pluginUiResultBundle(requestId, result, onGetPluginUi()),
-                    )
+            val languageTags = uiLanguageTags
+            val replyTo = message.replyTo
+            if (replyTo == null) {
+                runCatching(cleanup)
+                return
+            }
+            enqueuePluginUiOperation(cleanup) {
+                uiClient = replyTo
+                val (result, ui) = try {
+                    val operationResult = successful ?: operation()
+                    operationResult to onGetPluginUi(languageTags)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    Log.e(AUTOCORRECT_PLUGIN_TAG, "Provider UI operation failed", error)
+                    false to null
                 }
+                replyTo.sendSafely(
+                    AutocorrectPluginContract.MSG_PLUGIN_UI_RESULT,
+                    pluginUiResultBundle(
+                        requestId,
+                        result,
+                        ui,
+                    ),
+                )
             }
         }
     }

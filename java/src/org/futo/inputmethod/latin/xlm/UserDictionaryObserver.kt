@@ -17,7 +17,7 @@ class UserDictionaryObserver(context: Context) {
     private val contentResolver = context.applicationContext.contentResolver
     private val uri: Uri = UserDictionary.Words.CONTENT_URI
     private val handler = Handler(Looper.getMainLooper())
-    private var words = mutableListOf<Word>()
+    @Volatile private var words: List<Word> = emptyList()
 
     private val contentObserver = object : ContentObserver(handler) {
         override fun onChange(selfChange: Boolean) {
@@ -49,8 +49,7 @@ class UserDictionaryObserver(context: Context) {
             UserDictionary.Words.LOCALE,
             UserDictionary.Words.SHORTCUT)
         val cursor: Cursor? = contentResolver.query(uri, projection, null, null, null)
-
-        words.clear()
+        val updatedWords = mutableListOf<Word>()
 
         cursor?.use {
             val wordColumn = it.getColumnIndex(UserDictionary.Words.WORD)
@@ -65,18 +64,18 @@ class UserDictionaryObserver(context: Context) {
                 val shortcut = it.getString(shortcutColumn)
 
                 if(word.length < 64) {
-                    words.add(Word(word, frequency, locale, shortcut))
+                    updatedWords.add(Word(word, frequency, locale, shortcut))
                 }
             }
         }
 
-        words.sortByDescending { it.frequency }
+        updatedWords.sortByDescending { it.frequency }
 
 
         var approxNumTokens = 0
         var cutoffIndex = -1
-        for(index in 0 until words.size) {
-            approxNumTokens += (4+words[index].word.length) / 4
+        for(index in 0 until updatedWords.size) {
+            approxNumTokens += (4+updatedWords[index].word.length) / 4
             if(approxNumTokens > 200) {
                 cutoffIndex = index
                 break
@@ -84,9 +83,9 @@ class UserDictionaryObserver(context: Context) {
         }
 
         if(cutoffIndex != -1) {
-            Log.w("UserDictionaryObserver", "User Dictionary is being trimmed to $cutoffIndex / ${words.size} due to reaching num token limit")
-            words = words.subList(0, cutoffIndex)
+            Log.w("UserDictionaryObserver", "User Dictionary is being trimmed to $cutoffIndex / ${updatedWords.size} due to reaching num token limit")
         }
+        words = if (cutoffIndex == -1) updatedWords else updatedWords.take(cutoffIndex)
     }
 
     fun unregister() {
