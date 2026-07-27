@@ -27,7 +27,7 @@ import android.os.Bundle
 object AutocorrectPluginContract {
     const val ACTION_BIND_PROVIDER = "org.florisboard.autocorrect.api.action.BIND_PROVIDER"
     const val META_PROTOCOL_VERSION = "org.florisboard.autocorrect.api.PROTOCOL_VERSION"
-    const val PROTOCOL_VERSION = 2
+    const val PROTOCOL_VERSION = 3
 
     const val MSG_START_SESSION = 1
     const val MSG_SUGGEST = 2
@@ -46,6 +46,7 @@ object AutocorrectPluginContract {
     const val MSG_SUGGESTIONS = 101
     const val MSG_REMOVE_RESULT = 102
     const val MSG_PLUGIN_UI_RESULT = 103
+    const val MSG_FINISH_SESSION_RESULT = 104
 
     const val MAX_CONTEXT_CHARS = 512
     const val MAX_CANDIDATES = 16
@@ -323,6 +324,8 @@ fun removalRequestBundle(sessionId: Long, requestId: Long, candidateId: String) 
 fun finishSessionBundle(sessionId: Long) = Bundle().apply {
     putLong(Keys.SESSION_ID, sessionId)
 }
+
+fun finishSessionResultFromBundle(bundle: Bundle) = bundle.getLong(Keys.SESSION_ID)
 
 fun removalResultFromBundle(bundle: Bundle): Pair<Long, Boolean> {
     return bundle.getLong(Keys.REQUEST_ID) to bundle.getBoolean(Keys.REMOVED)

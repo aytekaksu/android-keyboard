@@ -34,7 +34,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -160,11 +159,9 @@ abstract class AutocorrectPluginService : Service() {
                 AutocorrectPluginContract.MSG_START_SESSION -> {
                     val session = AutocorrectSession.fromBundle(message.data)
                     suggestionJob?.cancel()
-                    val previousSessionJob = sessionJob
                     activeSessionId = session.sessionId
-                    sessionJob = serviceScope.launch {
-                        previousSessionJob?.join()
-                        predictionGuard.withLock { onStartSession(session) }
+                    enqueueSessionOperation {
+                        onStartSession(session)
                     }
                 }
                 AutocorrectPluginContract.MSG_SUGGEST -> {
@@ -198,12 +195,8 @@ abstract class AutocorrectPluginService : Service() {
                     val acceptanceKind = message.data.getString(Keys.ACCEPTANCE_KIND)?.let { value ->
                         enumValues<AutocorrectAcceptanceKind>().firstOrNull { it.name == value }
                     } ?: AutocorrectAcceptanceKind.MANUAL
-                    val sessionReady = sessionJob
-                    serviceScope.launch {
-                        sessionReady?.join()
-                        if (sessionId == activeSessionId) {
-                            onSuggestionAccepted(sessionId, candidateId, acceptanceKind)
-                        }
+                    enqueueSessionOperation {
+                        onSuggestionAccepted(sessionId, candidateId, acceptanceKind)
                     }
                 }
                 AutocorrectPluginContract.MSG_REVERTED -> {
@@ -211,12 +204,8 @@ abstract class AutocorrectPluginService : Service() {
                     if (sessionId != activeSessionId) return
                     val candidateId = message.data.getString(Keys.ID).orEmpty()
                         .take(AutocorrectPluginContract.MAX_CANDIDATE_ID_CHARS)
-                    val sessionReady = sessionJob
-                    serviceScope.launch {
-                        sessionReady?.join()
-                        if (sessionId == activeSessionId) {
-                            onSuggestionReverted(sessionId, candidateId)
-                        }
+                    enqueueSessionOperation {
+                        onSuggestionReverted(sessionId, candidateId)
                     }
                 }
                 AutocorrectPluginContract.MSG_REMOVE -> {
@@ -226,11 +215,8 @@ abstract class AutocorrectPluginService : Service() {
                     val candidateId = message.data.getString(Keys.ID).orEmpty()
                         .take(AutocorrectPluginContract.MAX_CANDIDATE_ID_CHARS)
                     val replyTo = message.replyTo
-                    val sessionReady = sessionJob
-                    serviceScope.launch {
-                        sessionReady?.join()
-                        val removed = sessionId == activeSessionId &&
-                            onRemoveSuggestion(sessionId, candidateId)
+                    enqueueSessionOperation {
+                        val removed = onRemoveSuggestion(sessionId, candidateId)
                         replyTo.sendSafely(
                             AutocorrectPluginContract.MSG_REMOVE_RESULT,
                             android.os.Bundle().apply {
@@ -244,11 +230,14 @@ abstract class AutocorrectPluginService : Service() {
                     val sessionId = message.data.getLong(Keys.SESSION_ID)
                     if (sessionId != activeSessionId) return
                     suggestionJob?.cancel()
-                    val previousSessionJob = sessionJob
+                    val replyTo = message.replyTo
                     activeSessionId = null
-                    sessionJob = serviceScope.launch {
-                        previousSessionJob?.cancelAndJoin()
-                        predictionGuard.withLock { onFinishSession(sessionId) }
+                    enqueueSessionOperation {
+                        onFinishSession(sessionId)
+                        replyTo.sendSafely(
+                            AutocorrectPluginContract.MSG_FINISH_SESSION_RESULT,
+                            finishSessionBundle(sessionId),
+                        )
                     }
                 }
                 AutocorrectPluginContract.MSG_CANCEL -> {
@@ -257,12 +246,8 @@ abstract class AutocorrectPluginService : Service() {
                 AutocorrectPluginContract.MSG_TEXT_EVENT -> {
                     val event = AutocorrectTextEvent.fromBundle(message.data) ?: return
                     if (event.sessionId != activeSessionId) return
-                    val sessionReady = sessionJob
-                    serviceScope.launch {
-                        sessionReady?.join()
-                        if (event.sessionId == activeSessionId) {
-                            onTextEvent(event)
-                        }
+                    enqueueSessionOperation {
+                        onTextEvent(event)
                     }
                 }
                 AutocorrectPluginContract.MSG_GET_PLUGIN_UI -> {
@@ -297,6 +282,14 @@ abstract class AutocorrectPluginService : Service() {
                     }
                 }
                 else -> super.handleMessage(message)
+            }
+        }
+
+        private fun enqueueSessionOperation(operation: suspend () -> Unit) {
+            val previous = sessionJob
+            sessionJob = serviceScope.launch {
+                previous?.join()
+                predictionGuard.withLock { operation() }
             }
         }
 
