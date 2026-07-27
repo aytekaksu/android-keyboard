@@ -14,6 +14,7 @@ import org.futo.inputmethod.latin.settings.SettingsValues
 import org.futo.inputmethod.latin.settings.SettingsValuesForSuggestion
 import org.futo.inputmethod.latin.uix.SettingsKey
 import org.futo.inputmethod.latin.uix.getSetting
+import org.futo.inputmethod.latin.utils.AtomicFileInstaller
 import org.futo.ml.inference.SwipeDecoder
 import java.io.File
 import java.util.Locale
@@ -268,27 +269,48 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
         fun parseMetadataToGetCodename(content: String): String =
             CodenameParseJson.decodeFromString<ModelMetadata>(content).codename
 
-        private val createdFiles = mutableSetOf<String>()
+        private var preparedCacheDirectory: File? = null
+        private val assetSizes = mutableMapOf<String, Long>()
+
+        @Suppress("DEPRECATION")
+        private fun cacheVersion(context: Context): String {
+            val info = context.packageManager.getPackageInfo(context.packageName, 0)
+            val version = if (android.os.Build.VERSION.SDK_INT >= 28) {
+                info.longVersionCode
+            } else {
+                info.versionCode.toLong()
+            }
+            // Reinstalls of a development build may retain the same version code.
+            return "$version-${info.lastUpdateTime}"
+        }
+
+        private fun cacheDirectory(context: Context): File {
+            preparedCacheDirectory?.let { return it }
+            val version = cacheVersion(context)
+            val root = File(context.codeCacheDir, "futo-swipe")
+            val directory = File(root, version)
+            root.listFiles()
+                ?.filter { it != directory }
+                ?.forEach { it.deleteRecursively() }
+            preparedCacheDirectory = directory
+            return directory
+        }
+
+        @Synchronized
         fun getFilePath(context: Context, assetName: String): String {
             if(assetName.isEmpty()) return ""
 
             val assets = context.assets
-            val tmpDir = context.codeCacheDir
-            val modelFile = File(tmpDir, assetName)
-
-            if (modelFile.exists()) {
-                if(assetName in createdFiles) return modelFile.absolutePath
-
-                modelFile.delete()
+            val modelFile = File(cacheDirectory(context), assetName)
+            val expectedSize = assetSizes.getOrPut(assetName) {
+                assets.open(assetName).use { it.available().toLong() }
             }
-            modelFile.parentFile?.mkdirs()
-            assets.open(assetName).use { inputStream ->
-                modelFile.outputStream().use { outputStream ->
-                    inputStream.copyTo(outputStream)
-                }
-            }
-
-            createdFiles.add(assetName)
+            AtomicFileInstaller.install(
+                target = modelFile,
+                expectedSize = expectedSize,
+                source = { assets.open(assetName) },
+                isValid = { it.isFile && it.length() == expectedSize },
+            )
 
             if(assetName.endsWith(".pte")) {
                 // Ensure metadata is also present

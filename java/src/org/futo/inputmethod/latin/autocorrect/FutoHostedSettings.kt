@@ -15,7 +15,10 @@ import androidx.core.content.edit
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import org.florisboard.autocorrect.api.AutocorrectPluginDocument
@@ -546,6 +549,8 @@ internal class FutoHostedSettings(
         } catch (error: DocumentFailure) {
             documentStatus = "$operation failed: ${error.message.orEmpty()}".take(MAX_STATUS_CHARS)
             false
+        } catch (error: CancellationException) {
+            throw error
         } catch (_: Exception) {
             documentStatus = "$operation failed because the file could not be read or written."
             false
@@ -1095,7 +1100,8 @@ internal class FutoHostedSettings(
             if (destination.exists()) {
                 throw DocumentFailure("A model named $safeName is already installed.")
             }
-            val staging = File.createTempFile(".floris-model-", ".tmp", directory)
+            cleanStaleDocumentStaging(directory, MODEL_STAGING_PREFIX)
+            val staging = File.createTempFile(MODEL_STAGING_PREFIX, ".tmp", directory)
             try {
                 copyDocument(document, staging, MAX_MODEL_BYTES, "The model")
                 val magic = staging.inputStream().use { input ->
@@ -1114,6 +1120,7 @@ internal class FutoHostedSettings(
                         "The file is not a supported GGUF keyboard language model.",
                     )
                 }
+                currentCoroutineContext().ensureActive()
                 if (destination.exists()) {
                     throw DocumentFailure("A model named $safeName is already installed.")
                 }
@@ -1151,7 +1158,17 @@ internal class FutoHostedSettings(
             ParcelFileDescriptor.AutoCloseOutputStream(
                 ParcelFileDescriptor.dup(document.fileDescriptor.fileDescriptor),
             ).use { output ->
-                selected.path.inputStream().use { it.copyTo(output) }
+                selected.path.inputStream().use { input ->
+                    val buffer = ByteArray(COPY_BUFFER_BYTES)
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                    }
+                    output.flush()
+                }
+                currentCoroutineContext().ensureActive()
             }
         }
         return true
@@ -1165,7 +1182,8 @@ internal class FutoHostedSettings(
             val directory = context.getExternalFilesDir(null)
                 ?: throw DocumentFailure("Provider storage is unavailable.")
             val destination = File(directory, destinationName)
-            val staging = File.createTempFile(".floris-dictionary-", ".tmp", directory)
+            cleanStaleDocumentStaging(directory, DICTIONARY_STAGING_PREFIX)
+            val staging = File.createTempFile(DICTIONARY_STAGING_PREFIX, ".tmp", directory)
             try {
                 copyDocument(document, staging, MAX_DICTIONARY_BYTES, "The dictionary")
                 val detected = runCatching {
@@ -1185,6 +1203,7 @@ internal class FutoHostedSettings(
                         }
                     }
                 }
+                currentCoroutineContext().ensureActive()
                 Os.rename(staging.absolutePath, destination.absolutePath)
                 Triple(destinationName, detected.name, document.displayName)
             } finally {
@@ -1683,7 +1702,7 @@ internal class FutoHostedSettings(
         }
     }
 
-    private fun copyDocument(
+    private suspend fun copyDocument(
         document: AutocorrectPluginDocument,
         destination: File,
         maximumBytes: Long,
@@ -1700,6 +1719,7 @@ internal class FutoHostedSettings(
                 val buffer = ByteArray(COPY_BUFFER_BYTES)
                 var copied = 0L
                 while (true) {
+                    currentCoroutineContext().ensureActive()
                     val count = input.read(buffer)
                     if (count < 0) break
                     copied += count
@@ -1708,8 +1728,21 @@ internal class FutoHostedSettings(
                     }
                     output.write(buffer, 0, count)
                 }
+                output.flush()
+                output.fd.sync()
             }
         }
+        currentCoroutineContext().ensureActive()
+    }
+
+    private fun cleanStaleDocumentStaging(directory: File, prefix: String) {
+        val cutoff = System.currentTimeMillis() - STAGING_MAX_AGE_MILLIS
+        directory.listFiles { file ->
+            file.isFile &&
+                file.name.startsWith(prefix) &&
+                file.name.endsWith(".tmp") &&
+                file.lastModified() < cutoff
+        }?.forEach { it.delete() }
     }
 
     private fun modelDetails(model: ModelInfoLoader): ModelInfo? {
@@ -1908,6 +1941,9 @@ internal class FutoHostedSettings(
         const val MAX_MODEL_BYTES = 2L * 1024L * 1024L * 1024L
         const val MAX_DICTIONARY_BYTES = 512L * 1024L * 1024L
         const val COPY_BUFFER_BYTES = 64 * 1024
+        const val MODEL_STAGING_PREFIX = ".floris-model-"
+        const val DICTIONARY_STAGING_PREFIX = ".floris-dictionary-"
+        const val STAGING_MAX_AGE_MILLIS = 24L * 60L * 60L * 1000L
         const val BINARY_MIME = "application/octet-stream"
         const val FUTO_KEYBOARD_URL = "https://keyboard.futo.tech/"
         const val SECONDS_PER_DAY = 24L * 60L * 60L
