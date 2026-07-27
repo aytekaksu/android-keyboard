@@ -326,6 +326,13 @@ struct LanguageModelState {
     }
 
     std::vector<TokenMix> past_mixes = { };
+    void ClearTransientContext() {
+        past_mixes.clear();
+        if(!model) return;
+        llama_kv_cache_seq_rm(model->context(), -1, -1, -1);
+        model->transformerContext.active_context = { };
+    }
+
     int GetCachedMixAmount(const std::vector<TokenMix> &mixes) {
         TIME_START(GetcachedMixAmount)
         size_t i;
@@ -906,6 +913,13 @@ namespace latinime {
         delete state;
     }
 
+    static void xlm_LanguageModel_clearContext(JNIEnv *env, jclass clazz, jlong statePtr) {
+        GGML_UNUSED(env);
+        GGML_UNUSED(clazz);
+        auto *state = reinterpret_cast<LanguageModelState *>(statePtr);
+        if(state != nullptr) state->ClearTransientContext();
+    }
+
     // (JLjava/lang/String;[Ljava/lang/String;[I[I)V
     // TODO: This will also need caching to not make things extremely slow by recomputing every time
     static void xlm_LanguageModel_rescoreSuggestions(JNIEnv *env, jclass clazz,
@@ -1275,6 +1289,11 @@ namespace latinime {
                     const_cast<char *>("closeNative"),
                     const_cast<char *>("(J)V"),
                     reinterpret_cast<void *>(xlm_LanguageModel_close)
+            },
+            {
+                    const_cast<char *>("clearContextNative"),
+                    const_cast<char *>("(J)V"),
+                    reinterpret_cast<void *>(xlm_LanguageModel_clearContext)
             },
             {
                     const_cast<char *>("getSuggestionsNative"),
