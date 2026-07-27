@@ -327,11 +327,72 @@ fun removalRequestBundle(sessionId: Long, requestId: Long, candidateId: String) 
         putLong(Keys.REQUEST_ID, requestId)
     }
 
+/** Legacy form for hosts which cannot supply an authoritative final editor snapshot. */
 fun finishSessionBundle(sessionId: Long) = Bundle().apply {
     putLong(Keys.SESSION_ID, sessionId)
 }
 
+/** Finish form whose snapshot remains authoritative even when it sanitizes to empty text. */
+fun finishSessionBundle(
+    sessionId: Long,
+    finalRequest: AutocorrectRequest,
+) = Bundle().apply {
+    val request = finalRequest.sanitizedForSessionFinish(sessionId)
+        ?: emptyFinalRequest(sessionId)
+    putLong(Keys.SESSION_ID, sessionId)
+    putBoolean(Keys.HAS_FINAL_REQUEST, true)
+    putBundle(Keys.FINAL_REQUEST, request.toBundle())
+}
+
 fun finishSessionResultFromBundle(bundle: Bundle) = bundle.getLong(Keys.SESSION_ID)
+
+internal fun finalRequestFromFinishSessionBundle(
+    bundle: Bundle,
+    sessionId: Long,
+): AutocorrectRequest? {
+    if (!bundle.getBoolean(Keys.HAS_FINAL_REQUEST)) return null
+    return bundle.getBundle(Keys.FINAL_REQUEST)
+        ?.let(AutocorrectRequest::fromBundle)
+        ?.sanitizedForSessionFinish(sessionId)
+        ?: emptyFinalRequest(sessionId)
+}
+
+private fun emptyFinalRequest(sessionId: Long) = AutocorrectRequest(
+    sessionId = sessionId,
+    requestId = 0L,
+    text = "",
+    selectionStart = 0,
+    selectionEnd = 0,
+    composingStart = -1,
+    composingEnd = -1,
+    currentWordStart = -1,
+    currentWordEnd = -1,
+    maxCandidateCount = 1,
+    allowPossiblyOffensive = false,
+)
+
+private fun AutocorrectRequest.sanitizedForSessionFinish(
+    expectedSessionId: Long,
+): AutocorrectRequest? {
+    if (
+        sessionId != expectedSessionId ||
+        selectionStart != selectionEnd ||
+        selectionStart !in 0..text.length
+    ) {
+        return null
+    }
+    fun validRange(start: Int, end: Int) =
+        start >= 0 && end in start..text.length
+    val validComposing = validRange(composingStart, composingEnd)
+    val validCurrentWord = validRange(currentWordStart, currentWordEnd)
+    return copy(
+        composingStart = if (validComposing) composingStart else -1,
+        composingEnd = if (validComposing) composingEnd else -1,
+        currentWordStart = if (validCurrentWord) currentWordStart else -1,
+        currentWordEnd = if (validCurrentWord) currentWordEnd else -1,
+        inputTrace = AutocorrectInputTrace.Empty,
+    )
+}
 
 fun removalResultFromBundle(bundle: Bundle): Pair<Long, Boolean> {
     return bundle.getLong(Keys.REQUEST_ID) to bundle.getBoolean(Keys.REMOVED)
@@ -372,6 +433,8 @@ internal object Keys {
     const val BOOSTED_CODE_POINTS = "boostedCodePoints"
     const val HANDLED = "handled"
     const val REMOVED = "removed"
+    const val HAS_FINAL_REQUEST = "hasFinalRequest"
+    const val FINAL_REQUEST = "finalRequest"
 }
 
 private inline fun <reified T : Enum<T>> Bundle.enumValueOrDefault(key: String, default: T): T {

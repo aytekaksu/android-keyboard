@@ -171,7 +171,14 @@ abstract class AutocorrectPluginService : Service() {
 
     protected open suspend fun onTextEvent(event: AutocorrectTextEvent) = Unit
 
+    /** Compatibility hook for providers built before final editor snapshots were available. */
     protected open suspend fun onFinishSession(sessionId: Long) = Unit
+
+    /** Extended hook; the default preserves providers which override only the legacy hook. */
+    protected open suspend fun onFinishSession(
+        sessionId: Long,
+        finalRequest: AutocorrectRequest?,
+    ) = onFinishSession(sessionId)
 
     /** Returns declarative pages which FlorisBoard can render in its app and keyboard UIs. */
     protected open suspend fun onGetPluginUi(languageTags: List<String>): AutocorrectPluginUi? = null
@@ -343,11 +350,12 @@ abstract class AutocorrectPluginService : Service() {
                 AutocorrectPluginContract.MSG_FINISH_SESSION -> {
                     val sessionId = message.data.getLong(Keys.SESSION_ID)
                     if (sessionId != activeSessionId) return
+                    val finalRequest = finalRequestFromFinishSessionBundle(message.data, sessionId)
                     suggestionJob?.cancel()
                     val replyTo = message.replyTo
                     activeSessionId = null
                     enqueueSessionOperation {
-                        onFinishSession(sessionId)
+                        onFinishSession(sessionId, finalRequest)
                         replyTo.sendSafely(
                             AutocorrectPluginContract.MSG_FINISH_SESSION_RESULT,
                             finishSessionBundle(sessionId),

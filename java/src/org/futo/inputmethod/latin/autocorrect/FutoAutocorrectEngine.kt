@@ -502,7 +502,10 @@ internal class FutoAutocorrectEngine(
         }
     }
 
-    suspend fun finishSession(sessionId: Long) = operationGuard.withLock finish@ {
+    suspend fun finishSession(
+        sessionId: Long,
+        finalRequest: AutocorrectRequest?,
+    ) = operationGuard.withLock finish@ {
         var committedEmail: String? = null
         val finished = stateGuard.withLock {
             if (session?.sessionId != sessionId) {
@@ -512,9 +515,11 @@ internal class FutoAutocorrectEngine(
                     isLearningAllowed() &&
                     settings.current.mInputAttributes.mIsEmailField
                 ) {
-                    committedEmail = lastRequest?.let {
-                        committedEmailBeforeCursor(it.text, it.selectionStart)
-                    }
+                    committedEmail = committedEmailForFinish(
+                        sessionId,
+                        finalRequest,
+                        lastRequest,
+                    )
                 }
                 clearSessionStateLocked()
                 true
@@ -985,8 +990,9 @@ internal class FutoAutocorrectEngine(
     }
 
     private fun learn(word: String, ngramContext: NgramContext, blockOffensive: Boolean) {
-        if (word.isBlank() || settings.current.mInputAttributes.mIsEmailField) return
+        if (word.isBlank()) return
         dictionary.onWordCommitted(word)
+        if (settings.current.mInputAttributes.mIsEmailField) return
         dictionary.addToUserHistory(
             word,
             false,
@@ -1029,6 +1035,23 @@ internal class FutoAutocorrectEngine(
         private const val PROVIDER_FLAVOR = "provider"
         private const val HISTORY_FLUSH_DELAY_MS = 5_000L
     }
+}
+
+internal fun committedEmailForFinish(
+    sessionId: Long,
+    finalRequest: AutocorrectRequest?,
+    lastRequest: AutocorrectRequest?,
+): String? {
+    fun AutocorrectRequest.isValid() =
+        this.sessionId == sessionId &&
+            selectionStart == selectionEnd &&
+            selectionStart in 0..text.length
+    val request = if (finalRequest != null) {
+        finalRequest.takeIf { it.isValid() }
+    } else {
+        lastRequest?.takeIf { it.isValid() }
+    }
+    return request?.let { committedEmailBeforeCursor(it.text, it.selectionStart) }
 }
 
 internal fun committedEmailBeforeCursor(text: String, selectionStart: Int): String? {
