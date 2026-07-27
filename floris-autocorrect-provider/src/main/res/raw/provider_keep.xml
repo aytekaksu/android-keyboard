@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@raw/ml4_q6_k,@raw/main,@raw/main_en,@raw/main_de,@raw/main_es,@raw/main_fr,@raw/main_it,@raw/main_pt_br,@raw/main_ru"
+    tools:discard="@anim/*,@animator/*,@color/*,@drawable/*,@font/*,@layout/*,@menu/*,@mipmap/*,@navigation/*,@transition/*,@xml/*,@raw/emoji_i18n,@raw/gemoji,@raw/supplemental_emotes" />

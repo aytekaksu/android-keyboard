@@ -27,17 +27,21 @@ class EmojiDictionary(locale: Locale) : Dictionary(TYPE_EMOJI, locale) {
         var emoji: String? = null
         if(!typedWord.isEmpty()) {
             if(isWordValidForShortcut((typedWord)))
-                emoji = PersistentEmojiState.getShortcut(mLocale, typedWord.lowercase(mLocale))
+                emoji = shortcut(typedWord.lowercase(mLocale))
         } else if((ngramContext?.prevWordCount ?: 0) > 0 && isBatchMode == false) {
             val prevWord = ngramContext?.getNthPrevWord(1)?.toString() ?: ""
             if(!prevWord.isEmpty()) {
                 if(isWordValidForShortcut(prevWord))
-                    emoji = PersistentEmojiState.getShortcut(mLocale, prevWord.lowercase(mLocale))
+                    emoji = shortcut(prevWord.lowercase(mLocale))
             }
         }
 
         if(emoji != null) {
-            emoji = PersistentEmojiState.transformEmojiToLastSkinTone(emoji)
+            emoji = if (BuildConfig.FLAVOR == PROVIDER_FLAVOR) {
+                EmojiSuggestionIndex.transformToLastSkinTone(emoji)
+            } else {
+                PersistentEmojiState.transformEmojiToLastSkinTone(emoji)
+            }
         }
 
         return if(emoji != null) {
@@ -75,5 +79,16 @@ class EmojiDictionary(locale: Locale) : Dictionary(TYPE_EMOJI, locale) {
 
     override fun isInDictionary(word: String?): Boolean {
         return false
+    }
+
+    private fun shortcut(word: String): String? =
+        if (BuildConfig.FLAVOR == PROVIDER_FLAVOR) {
+            EmojiSuggestionIndex.getShortcut(mLocale, word)
+        } else {
+            PersistentEmojiState.getShortcut(mLocale, word)
+        }
+
+    private companion object {
+        const val PROVIDER_FLAVOR = "provider"
     }
 }

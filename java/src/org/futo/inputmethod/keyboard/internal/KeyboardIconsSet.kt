@@ -17,6 +17,7 @@ package org.futo.inputmethod.keyboard.internal
 
 import android.content.res.TypedArray
 import android.graphics.drawable.Drawable
+import org.futo.inputmethod.latin.BuildConfig
 import org.futo.inputmethod.latin.uix.DynamicThemeProvider
 import org.futo.inputmethod.latin.uix.actions.AllActionsMap
 
@@ -80,12 +81,14 @@ class KeyboardIconsSet {
             NAME_NUMPAD,
             NAME_JAPANESE_KEY
         ).apply {
-            AllActionsMap.keys.forEachIndexed { i, it ->
-                // by number (action_0)
-                add("action_${i}")
+            if (BuildConfig.FLAVOR != "provider") {
+                AllActionsMap.keys.forEachIndexed { i, it ->
+                    // by number (action_0)
+                    add("action_${i}")
 
-                // by key (action_copy)
-                add("action_${it}")
+                    // by key (action_copy)
+                    add("action_${it}")
+                }
             }
         }.toSet()
 

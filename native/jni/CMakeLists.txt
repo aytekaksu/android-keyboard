@@ -8,6 +8,7 @@ option(EXT_BUILD        "External build" OFF)
 option(EXT_BUILD_ASAN   "External build with ASAN" OFF)
 option(FLAG_DBG         "Enable debug build" OFF)
 option(FLAG_DO_PROFILE  "Enable profiling build" OFF)
+option(FUTO_PROVIDER_ONLY "Build only the native prediction surface used by FlorisBoard" OFF)
 
 
 # ------------------------------------------------------------------
@@ -56,6 +57,16 @@ endif()
 # ------------------------------------------------------------------
 include(${CMAKE_CURRENT_SOURCE_DIR}/NativeFileList.cmake)
 
+if(FUTO_PROVIDER_ONLY)
+    list(REMOVE_ITEM LATIN_IME_JNI_SRC_FILES
+            ${CMAKE_CURRENT_SOURCE_DIR}/org_futo_inputmethod_latin_xlm_AdapterTrainer.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/org_futo_voiceinput_WhisperGGML.cpp)
+    list(REMOVE_ITEM LATIN_IME_CORE_SRC_FILES
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/ggml/whisper.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/ggml/finetune.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/ggml/train.cpp)
+endif()
+
 # ------------------------------------------------------------------
 # Static library: libjni_latinime_common_static
 # ------------------------------------------------------------------
@@ -82,6 +93,9 @@ if(NOT EXT_BUILD)
     add_library(jni_latinime SHARED ${LATIN_IME_JNI_SRC_FILES})
 
     target_include_directories(jni_latinime PRIVATE ${LATIN_IME_JNI_INCLUDE})
+    if(FUTO_PROVIDER_ONLY)
+        target_compile_definitions(jni_latinime PRIVATE FUTO_PROVIDER_ONLY)
+    endif()
 
     target_link_libraries(jni_latinime
             jni_latinime_common_static

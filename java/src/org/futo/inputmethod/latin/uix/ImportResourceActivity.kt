@@ -45,6 +45,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.futo.inputmethod.engine.GlobalIMEMessage
 import org.futo.inputmethod.engine.IMEMessage
+import org.futo.inputmethod.latin.BuildConfig
 import org.futo.inputmethod.latin.Dictionary
 import org.futo.inputmethod.latin.R
 import org.futo.inputmethod.latin.ReadOnlyBinaryDictionary
@@ -534,9 +535,12 @@ fun determineFileKind(inputStream: InputStream): FileKindAndInfo {
 }
 
 object ResourceHelper {
-    val BuiltInVoiceInputFallbacks = mapOf(
-        "en" to BUILTIN_ENGLISH_MODEL
-    )
+    val BuiltInVoiceInputFallbacks: Map<String, ModelLoader> =
+        if (BuildConfig.FLAVOR == "provider") {
+            emptyMap()
+        } else {
+            mapOf("en" to BUILTIN_ENGLISH_MODEL)
+        }
 
     fun findKeyForLocaleAndKind(context: Context, locale: Locale, kind: FileKind): String? {
         val keysToTry = listOf(
@@ -568,14 +572,14 @@ object ResourceHelper {
     }
 
     fun tryFindingVoiceInputModelForLocale(context: Context, locale: Locale): ModelLoader? {
-        val file = runBlocking { findFileForKind(context, locale, FileKind.VoiceInput) }
+        val file = findFileForKind(context, locale, FileKind.VoiceInput)
             ?: return BuiltInVoiceInputFallbacks[locale.language]
 
         return ModelFileFile(R.string.settings_external_model_name, file)
     }
 
     fun tryOpeningCustomMainDictionaryForLocale(context: Context, locale: Locale): ReadOnlyBinaryDictionary? {
-        val file = runBlocking { findFileForKind(context, locale, FileKind.Dictionary) } ?: return null
+        val file = findFileForKind(context, locale, FileKind.Dictionary) ?: return null
 
         return ReadOnlyBinaryDictionary(
             file.absolutePath,

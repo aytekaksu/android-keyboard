@@ -10,7 +10,6 @@ package org.futo.inputmethod.latin.autocorrect
 import android.content.Context
 import android.util.Log
 import android.view.inputmethod.EditorInfo
-import androidx.lifecycle.LifecycleCoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,9 +37,11 @@ import org.florisboard.autocorrect.api.AutocorrectTextEventKind
 import org.futo.inputmethod.event.Event
 import org.futo.inputmethod.keyboard.Keyboard
 import org.futo.inputmethod.latin.BinaryDictionary
+import org.futo.inputmethod.latin.BuildConfig
 import org.futo.inputmethod.latin.Dictionary
 import org.futo.inputmethod.latin.DictionaryFacilitator
 import org.futo.inputmethod.latin.DictionaryFacilitatorProvider
+import org.futo.inputmethod.latin.EmojiSuggestionIndex
 import org.futo.inputmethod.latin.InputAttributes
 import org.futo.inputmethod.latin.NgramContext
 import org.futo.inputmethod.latin.Suggest
@@ -55,6 +56,7 @@ import org.futo.inputmethod.latin.personalization.PersonalizationHelper
 import org.futo.inputmethod.latin.personalization.UserHistoryDictionary
 import org.futo.inputmethod.latin.settings.Settings
 import org.futo.inputmethod.latin.settings.SettingsValuesForSuggestion
+import org.futo.inputmethod.latin.settings.ProviderSessionLanguages
 import org.futo.inputmethod.latin.uix.EmojiTracker.useEmoji
 import org.futo.inputmethod.latin.uix.SHOW_EMOJI_SUGGESTIONS
 import org.futo.inputmethod.latin.uix.SUGGESTION_BLACKLIST
@@ -78,7 +80,7 @@ import kotlin.math.ceil
 
 internal class FutoAutocorrectEngine(
     private val context: Context,
-    private val lifecycleScope: LifecycleCoroutineScope,
+    private val scope: CoroutineScope,
 ) {
     private data class CandidateRecord(
         val word: String,
@@ -105,7 +107,7 @@ internal class FutoAutocorrectEngine(
         DictionaryFacilitatorProvider.getDictionaryFacilitator(false)
     private val suggest = Suggest(dictionary)
     private val suggestionBlacklist =
-        SuggestionBlacklist(settings, context, lifecycleScope).also { it.init() }
+        SuggestionBlacklist(settings, context, scope).also { it.init() }
     private val userDictionary = UserDictionaryObserver(context)
     private val operationGuard = Mutex()
     private val stateGuard = Mutex()
@@ -124,7 +126,7 @@ internal class FutoAutocorrectEngine(
     private var transformerTimeouts = 0
     private var transformerDisabled = false
     @Volatile private var modelsInvalidated = false
-    private val modelUpdates = lifecycleScope.launch(Dispatchers.Default) {
+    private val modelUpdates = scope.launch(Dispatchers.Default) {
         ModelPaths.modelOptionsUpdated.collect {
             operationGuard.withLock {
                 modelPreparation?.cancelAndJoin()
@@ -157,6 +159,7 @@ internal class FutoAutocorrectEngine(
             newSession.secondaryLanguageTags.mapTo(this) { Locale.forLanguageTag(it) }
         }.filter { it.language.isNotBlank() }.distinctBy(Locale::toLanguageTag)
         val primaryLocale = locales.firstOrNull() ?: Locale.ENGLISH
+        ProviderSessionLanguages.replace(locales.drop(1))
         val editorInfo = EditorInfo().apply {
             inputType = newSession.inputType
             packageName = context.packageName
@@ -183,7 +186,11 @@ internal class FutoAutocorrectEngine(
                 ?: SHOW_EMOJI_SUGGESTIONS.default
         if (emojiSuggestionsEnabled) {
             locales.ifEmpty { listOf(primaryLocale) }.forEach {
-                PersistentEmojiState.loadTranslationsForLanguage(context, it)
+                if (BuildConfig.FLAVOR == PROVIDER_FLAVOR) {
+                    EmojiSuggestionIndex.loadForLanguage(context, it)
+                } else {
+                    PersistentEmojiState.loadTranslationsForLanguage(context, it)
+                }
             }
         }
         val usePersonalized = settings.current.mUsePersonalizedDicts &&
@@ -210,7 +217,7 @@ internal class FutoAutocorrectEngine(
             preparedModels == null &&
             modelPreparation?.isActive != true
         ) {
-            modelPreparation = lifecycleScope.launch(Dispatchers.IO) {
+            modelPreparation = scope.launch(Dispatchers.IO) {
                 preparedModels = try {
                     ModelPaths.getModelOptions(context)
                 } catch (error: Throwable) {
@@ -373,7 +380,9 @@ internal class FutoAutocorrectEngine(
             }
         } ?: return@accepted
         if (record.isEmoji) {
-            context.useEmoji(record.word)
+            if (BuildConfig.FLAVOR != PROVIDER_FLAVOR) {
+                context.useEmoji(record.word)
+            }
         } else {
             learn(record.word, record.ngramContext, record.blockPotentiallyOffensive)
         }
@@ -639,7 +648,7 @@ internal class FutoAutocorrectEngine(
         val key = "${locale.language}:${model.path.absolutePath}"
         if (languageModelKey != key) {
             closeLanguageModelLocked()
-            languageModel = LanguageModel(context, lifecycleScope, model, locale)
+            languageModel = LanguageModel(context, model, locale)
             languageModelKey = key
         }
         return languageModel
@@ -893,6 +902,7 @@ internal class FutoAutocorrectEngine(
 
     companion object {
         private const val TAG = "FutoAutocorrectEngine"
+        private const val PROVIDER_FLAVOR = "provider"
     }
 }
 

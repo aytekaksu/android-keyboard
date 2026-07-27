@@ -2,9 +2,6 @@ package org.futo.inputmethod.latin
 
 import android.content.Context
 import android.util.Log
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -252,9 +249,11 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
             private set
 
         // for debug info
-        val appliedScoring = mutableStateOf(SwipeDecoder.Scoring(0.0f, 0.0f, 0.0f, 0.0f))
+        var appliedScoring = SwipeDecoder.Scoring(0.0f, 0.0f, 0.0f, 0.0f)
+            private set
         var appliedTries: LongArray? = null
-        var appliedTrieWeights by mutableStateOf<FloatArray>(FloatArray(0))
+        var appliedTrieWeights = FloatArray(0)
+            private set
 
         fun metadataFor(pteAsset: String): String
             = pteAsset.substringBeforeLast('/') + "/metadata.json"
@@ -464,9 +463,12 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
         }
 
         // basically update it at end of swiping
-        if(useHighBeam) appliedScoring.value = decoder.scoring
+        if(useHighBeam) appliedScoring = decoder.scoring
 
-        if(BuildConfig.DEBUG || System.currentTimeMillis() < debugLogUntil) {
+        if (
+            BuildConfig.FLAVOR != "provider" &&
+            (BuildConfig.DEBUG || System.currentTimeMillis() < debugLogUntil)
+        ) {
             Log.d("SwipeDecoderDictionary", "Timing: ${decoder.lastTiming()}")
             Log.d("SwipeDecoderDictionary", "Left = $left")
             Log.d("SwipeDecoderDictionary", "Right = $right")
@@ -526,7 +528,7 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
                     lmModelPath=getFilePath(context, pend.layout.lm),
                     lmVocabPath=getFilePath(context, vocabFor(pend.layout.lm))
                 )
-                appliedScoring.value = d.scoring
+                appliedScoring = d.scoring
                 appliedLayoutInfo = pend.layout
                 appliedTries = pend.tries.toLongArray()
             }
@@ -548,7 +550,7 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
             appliedLayoutInfo = LayoutInfoForModel.DEFAULT
             appliedTries = null
             appliedTrieWeights = FloatArray(0)
-            appliedScoring.value = SwipeDecoder.Scoring(0.0f, 0.0f, 0.0f, 0.0f)
+            appliedScoring = SwipeDecoder.Scoring(0.0f, 0.0f, 0.0f, 0.0f)
             decoderToClose?.close()
         }
     }

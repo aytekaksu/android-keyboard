@@ -39,6 +39,7 @@ enum class AutocorrectPluginUiItemKind {
     DOCUMENT_EXPORT,
     INFO,
     PROGRESS,
+    EXTERNAL_LINK,
 }
 
 enum class AutocorrectPluginUiIcon {
@@ -73,7 +74,8 @@ data class AutocorrectPluginUiOption(
 /**
  * One host-rendered provider control. [value] is encoded as text so future engines can introduce
  * settings without changing the wire format. Hosts interpret booleans and numbers according to
- * [kind].
+ * [kind]. [target] is a page ID for [AutocorrectPluginUiItemKind.NAVIGATION] and an absolute HTTPS
+ * URL for [AutocorrectPluginUiItemKind.EXTERNAL_LINK].
  */
 data class AutocorrectPluginUiItem(
     val id: String,
@@ -243,7 +245,7 @@ private fun AutocorrectPluginUiItem.toBundle(budget: UiBudget) = Bundle().apply 
     putDouble(UiKeys.MINIMUM, minimum)
     putDouble(UiKeys.MAXIMUM, maximum)
     putDouble(UiKeys.STEP, step)
-    putString(UiKeys.TARGET, target?.take(UiLimits.TARGET_CHARS))
+    putString(UiKeys.TARGET, target.boundedTarget(kind))
     putString(UiKeys.ICON, icon.name)
     putBoolean(UiKeys.ENABLED, enabled)
     putString(UiKeys.CONFIRMATION, confirmation?.take(UiLimits.TEXT_CHARS))
@@ -353,7 +355,7 @@ private fun Bundle.toPluginUiItem(budget: UiBudget): AutocorrectPluginUiItem? {
                 it.isFloatRepresentable() &&
                 (floatSpan / it.toFloat()).isFinite()
         } ?: 0.0,
-        target = getString(UiKeys.TARGET)?.take(UiLimits.TARGET_CHARS),
+        target = getString(UiKeys.TARGET).boundedTarget(kind),
         icon = enumValueOrDefault(getString(UiKeys.ICON), AutocorrectPluginUiIcon.NONE),
         enabled = getBoolean(UiKeys.ENABLED, true),
         confirmation = getString(UiKeys.CONFIRMATION)?.take(UiLimits.TEXT_CHARS),
@@ -376,6 +378,13 @@ private fun Bundle.toPluginUiItem(budget: UiBudget): AutocorrectPluginUiItem? {
 }
 
 private fun Double.isFloatRepresentable() = isFinite() && toFloat().isFinite()
+
+private fun String?.boundedTarget(kind: AutocorrectPluginUiItemKind) =
+    takeIf {
+        kind != AutocorrectPluginUiItemKind.EXTERNAL_LINK ||
+            it.orEmpty().length <= UiLimits.TARGET_CHARS
+    }
+        ?.take(UiLimits.TARGET_CHARS)
 
 private inline fun <reified T : Enum<T>> enumValueOrDefault(value: String?, default: T): T {
     return enumValues<T>().firstOrNull { it.name == value } ?: default

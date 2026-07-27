@@ -62,7 +62,9 @@ var CanThrowIfDebug = true
 
 val IsDebug = BuildConfig.DEBUG || (BuildConfig.FLAVOR == "unstable" && CanThrowIfDebug)
 fun throwIfDebug(ex: Exception) {
-    if(IsDebug) {
+    if (BuildConfig.FLAVOR == "provider") {
+        Log.e("FutoProvider", "Prediction engine error", ex)
+    } else if(IsDebug) {
         throw ex
     } else {
         val sw = java.io.StringWriter()

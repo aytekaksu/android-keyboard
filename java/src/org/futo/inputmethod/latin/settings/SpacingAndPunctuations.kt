@@ -16,11 +16,9 @@
 package org.futo.inputmethod.latin.settings
 
 import android.content.Context
+import android.util.LruCache
 import android.util.Xml
-import androidx.collection.LruCache
 import org.futo.inputmethod.annotations.UsedForTesting
-import org.futo.inputmethod.keyboard.internal.MoreKeySpec
-import org.futo.inputmethod.latin.PunctuationSuggestions
 import org.futo.inputmethod.latin.common.StringUtils
 import org.xmlpull.v1.XmlPullParser
 import java.io.IOException
@@ -156,8 +154,6 @@ class SpacingAndPunctuations(
     @JvmField
     val sortedWordSeparators: IntArray,
     @JvmField
-    val suggestPuncList: PunctuationSuggestions,
-    @JvmField
     val sentenceSeparatorAndSpace: String,
     @JvmField
     val currentLanguageHasSpaces: Boolean,
@@ -191,7 +187,6 @@ class SpacingAndPunctuations(
         ): SpacingAndPunctuations {
             return SpacingAndPunctuations(
                 sortedWordSeparators = overrideSortedWordSeparators,
-                suggestPuncList = model.suggestPuncList,
                 sentenceSeparatorAndSpace = model.sentenceSeparatorAndSpace,
                 currentLanguageHasSpaces = model.currentLanguageHasSpaces,
                 usesAmericanTypography = model.usesAmericanTypography,
@@ -230,11 +225,6 @@ class SpacingAndPunctuations(
                 // English variants. German rules (not "German typography") also have small gotchas.
                 usesAmericanTypography = locale.language == Locale.ENGLISH.language,
                 usesGermanRules = locale.language == Locale.GERMAN.language,
-
-                // Unused.
-                suggestPuncList = PunctuationSuggestions.newPunctuationSuggestions(
-                    MoreKeySpec.splitKeySpecs(config.strings["suggested_punctuations"]!!)
-                )
             )
         }
     }
@@ -292,7 +282,6 @@ class SpacingAndPunctuations(
         append("   sortedSymbolsClusteringTogether = ${sortedSymbolsClusteringTogether.contentToString()}\n")
         append("   sortedWordConnectors = ${sortedWordConnectors.contentToString()}\n")
         append("   sortedWordSeparators = ${sortedWordSeparators.contentToString()}\n")
-        append("   suggestPuncList = $suggestPuncList\n")
         append("   sentenceSeparator = $sentenceSeparator\n")
         append("   sentenceSeparatorAndSpace = $sentenceSeparatorAndSpace\n")
         append("   currentLanguageHasSpaces = $currentLanguageHasSpaces\n")

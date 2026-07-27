@@ -1,7 +1,7 @@
 package org.futo.inputmethod.latin
 
 import android.content.Context
-import androidx.lifecycle.LifecycleCoroutineScope
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -13,7 +13,11 @@ import org.futo.inputmethod.latin.uix.getSettingFlow
 import org.futo.inputmethod.latin.uix.settings.BadWordMode
 import org.futo.inputmethod.latin.uix.settings.shouldBlockWord
 
-class SuggestionBlacklist(val settings: Settings, val context: Context, val lifecycleScope: LifecycleCoroutineScope) {
+class SuggestionBlacklist(
+    val settings: Settings,
+    val context: Context,
+    private val scope: CoroutineScope,
+) {
     private val userBlacklistedWords =
         MutableStateFlow(context.getSetting(SUGGESTION_BLACKLIST).toSet())
 
@@ -24,7 +28,7 @@ class SuggestionBlacklist(val settings: Settings, val context: Context, val life
     )
 
     fun init() {
-        lifecycleScope.launch {
+        scope.launch {
             context.getSettingFlow(SUGGESTION_BLACKLIST).collect { value ->
                 userBlacklistedWords.value = value.toSet()
             }

@@ -21,8 +21,6 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import androidx.annotation.NonNull;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -42,7 +40,7 @@ public class PermissionsUtil {
                                                           String... permissions) {
         final List<String> deniedPermissions = new ArrayList<>();
         for (String permission : permissions) {
-            if (ContextCompat.checkSelfPermission(context, permission)
+            if (context.checkSelfPermission(permission)
                     != PackageManager.PERMISSION_GRANTED) {
                 deniedPermissions.add(permission);
             }
@@ -58,7 +56,7 @@ public class PermissionsUtil {
      */
     public static void requestPermissions(Activity activity, int requestCode,
                                           String[] permissions) {
-        ActivityCompat.requestPermissions(activity, permissions, requestCode);
+        activity.requestPermissions(permissions, requestCode);
     }
 
     /**
@@ -83,7 +81,7 @@ public class PermissionsUtil {
         }
 
         for (String permission : permissions) {
-            if (ContextCompat.checkSelfPermission(context, permission)
+            if (context.checkSelfPermission(permission)
                     != PackageManager.PERMISSION_GRANTED) {
                 return false;
             }
