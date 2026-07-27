@@ -325,6 +325,7 @@ internal class FutoAutocorrectEngine(
             prepared = prepared,
             dictionaryWords = filteredDictionaryWords,
             transformerWords = transformerWords.orEmpty(),
+            allowCandidateRemoval = activeSession.allowPersonalizedLearning,
         )
         val boostedCodePoints = if (
             !prepared.isGesture &&
@@ -416,7 +417,9 @@ internal class FutoAutocorrectEngine(
         candidateId: String,
     ): Boolean = operationGuard.withLock remove@ {
         val record = stateGuard.withLock {
-            if (session?.sessionId == sessionId) candidates[candidateId] else null
+            session
+                ?.takeIf { it.sessionId == sessionId && it.allowPersonalizedLearning }
+                ?.let { candidates[candidateId] }
         } ?: return@remove false
         replaceBlacklistLocked(context.getSetting(SUGGESTION_BLACKLIST) + record.word)
         if (
@@ -692,6 +695,7 @@ internal class FutoAutocorrectEngine(
         prepared: PreparedInput,
         dictionaryWords: SuggestedWords,
         transformerWords: List<SuggestedWordInfo>,
+        allowCandidateRemoval: Boolean,
     ): List<AutocorrectCandidate> {
         val blockPotentiallyOffensive =
             settings.current.mBlockPotentiallyOffensive || !request.allowPossiblyOffensive
@@ -860,7 +864,7 @@ internal class FutoAutocorrectEngine(
                 confidence = 1.0 - index.toDouble() / (ordered.size + 1.0),
                 kind = kind,
                 autoCommit = info.word == autoWord,
-                removable = kind != AutocorrectCandidateKind.TYPED,
+                removable = allowCandidateRemoval && kind != AutocorrectCandidateKind.TYPED,
                 visible = settings.current.isSuggestionsEnabledPerUserSettings,
                 replacementStart = replacementStart,
                 replacementEnd = replacementEnd,
