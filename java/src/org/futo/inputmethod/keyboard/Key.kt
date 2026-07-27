@@ -21,8 +21,6 @@ import android.graphics.drawable.Drawable
 import android.os.Build
 import android.text.TextUtils
 import android.util.SparseIntArray
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import org.futo.inputmethod.keyboard.internal.KeyDrawParams
 import org.futo.inputmethod.keyboard.internal.KeySpecParser
 import org.futo.inputmethod.keyboard.internal.KeyVisualAttributes
@@ -410,9 +408,7 @@ data class Key(
                 mPressed -> style.foregroundColorPressed
                 else -> style.foregroundColor
             }
-        }.let {
-            Color(it).copy(alpha = 0.8f).toArgb()
-        }
+        }.let { (it and 0x00FFFFFF) or 0xCC000000.toInt() }
     }
 
     fun selectMoreKeyTextSize(params: KeyDrawParams): Int {

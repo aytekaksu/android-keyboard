@@ -336,7 +336,11 @@ fun refreshMozcDictionaries(context: Context, executor: SessionExecutor) {
                         ProtoUserDictionaryStorage.UserDictionary.Entry.newBuilder()
                             .setKey(it.furigana)
                             .setValue(it.output)
-                            .setPos(it.pos.id)
+                            .setPos(
+                                ProtoUserDictionaryStorage.UserDictionary.PosType.valueOf(
+                                    it.pos.name,
+                                ),
+                            )
                             .build()
                     )
                     .setDictionaryId(dictId)
