@@ -17,6 +17,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -122,6 +123,7 @@ internal class FutoAutocorrectEngine(
     private var languageModel: LanguageModel? = null
     private var languageModelKey: String? = null
     private var modelPreparation: Job? = null
+    private var historyFlushJob: Job? = null
     @Volatile private var preparedModels: Map<String, ModelInfoLoader>? = null
     private var transformerTimeouts = 0
     private var transformerDisabled = false
@@ -347,6 +349,7 @@ internal class FutoAutocorrectEngine(
         resourcesChanged: Boolean = false,
     ) {
         operationGuard.withLock {
+            if (resourcesChanged) flushHistory()
             if (modelsChanged) {
                 modelPreparation?.cancelAndJoin()
                 modelPreparation = null
@@ -410,6 +413,7 @@ internal class FutoAutocorrectEngine(
             nowSeconds(),
             Constants.EVENT_REVERT,
         )
+        scheduleHistoryFlush()
     }
 
     suspend fun remove(
@@ -432,6 +436,7 @@ internal class FutoAutocorrectEngine(
                 nowSeconds(),
                 Constants.EVENT_REJECTION,
             )
+            scheduleHistoryFlush()
         }
         true
     }
@@ -472,6 +477,7 @@ internal class FutoAutocorrectEngine(
                         nowSeconds(),
                         Constants.EVENT_BACKSPACE,
                     )
+                    scheduleHistoryFlush()
                 }
             }
         }
@@ -490,12 +496,11 @@ internal class FutoAutocorrectEngine(
         }
         if (!finished) return@finish
         dictionary.onFinishInput(context)
-        withContext(Dispatchers.IO) {
-            dictionary.flushUserHistoryDictionaries()
-        }
+        flushHistory()
     }
 
     suspend fun clearHistory(): Boolean = operationGuard.withLock {
+        cancelHistoryFlush()
         val cleared = withContext(Dispatchers.IO) {
             PersonalizationHelper.removeAllUserHistoryDictionaries(context)
             context.filesDir.listFiles().orEmpty().none {
@@ -518,6 +523,7 @@ internal class FutoAutocorrectEngine(
         cleanupScope.launch {
             try {
                 operationGuard.withLock {
+                    cancelHistoryFlush()
                     runCatching { modelPreparation?.cancelAndJoin() }.onFailure {
                         Log.w(TAG, "Failed to stop model preparation", it)
                     }
@@ -896,6 +902,28 @@ internal class FutoAutocorrectEngine(
             nowSeconds(),
             blockOffensive,
         )
+        scheduleHistoryFlush()
+    }
+
+    private fun scheduleHistoryFlush() {
+        if (historyFlushJob?.isActive == true) return
+        historyFlushJob = scope.launch {
+            delay(HISTORY_FLUSH_DELAY_MS)
+            operationGuard.withLock {
+                dictionary.flushUserHistoryDictionaries()
+                historyFlushJob = null
+            }
+        }
+    }
+
+    private fun flushHistory() {
+        cancelHistoryFlush()
+        dictionary.flushUserHistoryDictionaries()
+    }
+
+    private fun cancelHistoryFlush() {
+        historyFlushJob?.cancel()
+        historyFlushJob = null
     }
 
     private fun isLearningAllowed() = session?.allowPersonalizedLearning == true &&
@@ -907,6 +935,7 @@ internal class FutoAutocorrectEngine(
     companion object {
         private const val TAG = "FutoAutocorrectEngine"
         private const val PROVIDER_FLAVOR = "provider"
+        private const val HISTORY_FLUSH_DELAY_MS = 5_000L
     }
 }
 
