@@ -57,18 +57,6 @@
                  android:resource="@xml/method"/>
         </service>
 
-        <service
-            android:name=".autocorrect.FlorisAutocorrectService"
-            android:exported="true"
-            android:label="FUTO predictive text">
-            <intent-filter>
-                <action android:name="org.florisboard.autocorrect.api.action.BIND_PROVIDER" />
-            </intent-filter>
-            <meta-data
-                android:name="org.florisboard.autocorrect.api.PROTOCOL_VERSION"
-                android:value="2" />
-        </service>
-
         <!--
         <service android:name=".spellcheck.AndroidSpellCheckerService"
              android:label="@string/spell_checker_service_name"
