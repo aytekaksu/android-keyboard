@@ -66,6 +66,7 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
     private static final boolean DBG_STRESS_TEST = false;
 
     private static final int TIMEOUT_FOR_READ_OPS_IN_MILLISECONDS = 100;
+    private static final int TIMEOUT_FOR_WRITE_OPS_IN_MILLISECONDS = 5_000;
 
     /**
      * The maximum length of a word in this dictionary.
@@ -599,12 +600,46 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
     /**
      * Create a new binary dictionary and load initial contents.
      */
-    void createNewDictionaryLocked() {
+    boolean createNewDictionaryLocked() {
         removeBinaryDictionaryLocked();
         createOnMemoryBinaryDictionaryLocked();
         loadInitialContentsLocked();
         // Run GC and flush to file when initial contents have been loaded.
-        mBinaryDictionary.flushWithGCIfHasUpdated();
+        return mBinaryDictionary.flushWithGCIfHasUpdated();
+    }
+
+    boolean clearAndFlushDictionary() {
+        final AtomicBoolean success = new AtomicBoolean();
+        final CountDownLatch completed = new CountDownLatch(1);
+        asyncExecuteTaskWithWriteLock(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    success.set(createNewDictionaryLocked());
+                } finally {
+                    completed.countDown();
+                }
+            }
+        });
+        try {
+            if (!completed.await(
+                    TIMEOUT_FOR_WRITE_OPS_IN_MILLISECONDS, TimeUnit.MILLISECONDS)) {
+                return false;
+            }
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+        return success.get();
+    }
+
+    void clearAndFlushDictionaryAsync() {
+        asyncExecuteTaskWithWriteLock(new Runnable() {
+            @Override
+            public void run() {
+                createNewDictionaryLocked();
+            }
+        });
     }
 
     /**
