@@ -348,6 +348,11 @@ class LanguageModel(
         return@withContext getSuggestionsInternal(proximityInfoHandle, context, composeInfo, autocorrectThreshold, bannedWords)
     }
 
+    suspend fun clearTransientContext() = withContext(LanguageModelScope) {
+        prevSafeguardContextResult = ""
+        if (mNativeState != 0L) clearContextNative(mNativeState)
+    }
+
     suspend fun closeInternalLocked() = withContext(LanguageModelScope) {
         if (mNativeState != 0L) {
             closeNative(mNativeState)
@@ -358,6 +363,7 @@ class LanguageModel(
     var mNativeState: Long = 0
     private external fun openNative(sourceDir: String): Long
     private external fun closeNative(state: Long)
+    private external fun clearContextNative(state: Long)
     private external fun getSuggestionsNative( // inputs
         state: Long,
         proximityInfoHandle: Long,

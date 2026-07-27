@@ -59,6 +59,7 @@ import org.futo.inputmethod.latin.settings.Settings
 import org.futo.inputmethod.latin.settings.SettingsValuesForSuggestion
 import org.futo.inputmethod.latin.settings.ProviderSessionLanguages
 import org.futo.inputmethod.latin.uix.EmojiTracker.useEmoji
+import org.futo.inputmethod.latin.uix.PreferenceUtils
 import org.futo.inputmethod.latin.uix.SHOW_EMOJI_SUGGESTIONS
 import org.futo.inputmethod.latin.uix.SUGGESTION_BLACKLIST
 import org.futo.inputmethod.latin.uix.actions.PersistentEmojiState
@@ -69,7 +70,6 @@ import org.futo.inputmethod.latin.utils.NgramContextUtils
 import org.futo.inputmethod.latin.xlm.AllowTransformerOnNonQWERTYLayouts
 import org.futo.inputmethod.latin.xlm.AutocorrectThresholdSetting
 import org.futo.inputmethod.latin.xlm.BinaryDictTransformerWeightSetting
-import org.futo.inputmethod.latin.xlm.LanguageModel
 import org.futo.inputmethod.latin.xlm.ModelInfoLoader
 import org.futo.inputmethod.latin.xlm.ModelLoadingException
 import org.futo.inputmethod.latin.xlm.ModelPaths
@@ -120,21 +120,18 @@ internal class FutoAutocorrectEngine(
     private var lastRequest: AutocorrectRequest? = null
     private var lastKeyboard: Keyboard? = null
     private var keyboardSignature = 0
-    private var languageModel: LanguageModel? = null
-    private var languageModelKey: String? = null
     private var modelPreparation: Job? = null
     private var historyFlushJob: Job? = null
     @Volatile private var preparedModels: Map<String, ModelInfoLoader>? = null
     private var transformerTimeouts = 0
     private var transformerDisabled = false
-    @Volatile private var modelsInvalidated = false
     private val modelUpdates = scope.launch(Dispatchers.Default) {
         ModelPaths.modelOptionsUpdated.collect {
             operationGuard.withLock {
                 modelPreparation?.cancelAndJoin()
                 modelPreparation = null
-                modelsInvalidated = true
                 preparedModels = null
+                FutoTransformerModelCache.evict()
             }
         }
     }
@@ -147,6 +144,7 @@ internal class FutoAutocorrectEngine(
         newSession: AutocorrectSession,
         forceReloadDictionaries: Boolean = false,
     ) {
+        FutoTransformerModelCache.clearContext()
         stateGuard.withLock {
             session = newSession
             lastRequest = null
@@ -177,11 +175,10 @@ internal class FutoAutocorrectEngine(
         val activeModelLanguages = locales
             .ifEmpty { listOf(primaryLocale) }
             .mapTo(mutableSetOf()) { it.language }
-        if (
-            !settings.current.mTransformerPredictionEnabled ||
-            languageModelKey?.substringBefore(':')?.let { it !in activeModelLanguages } == true
-        ) {
-            closeLanguageModelLocked()
+        if (!settings.current.mTransformerPredictionEnabled) {
+            FutoTransformerModelCache.evict()
+        } else {
+            FutoTransformerModelCache.evictUnless(activeModelLanguages)
         }
         val emojiSuggestionsEnabled =
             context.dataStore.data.first()[SHOW_EMOJI_SUGGESTIONS.key]
@@ -291,20 +288,22 @@ internal class FutoAutocorrectEngine(
             val modelLocale = dictionary.mostConfidentLocale.takeIf {
                 it.language.isNotBlank()
             } ?: dictionary.primaryLocale
-            val model = getLanguageModel(modelLocale)
+            val model = getLanguageModelInfo(modelLocale)
             if (model == null) {
                 null
             } else {
                 val result = try {
-                    withTimeoutOrNull(325L) {
-                        model.getSuggestions(
-                            prepared.composer.composedDataSnapshot,
-                            prepared.ngramContext,
-                            prepared.keyboard.proximityInfo.nativeProximityInfo,
-                            context.getSetting(AutocorrectThresholdSetting),
-                            userDictionary.getWords(dictionary.locales).map { it.word },
-                            context.getSetting(SUGGESTION_BLACKLIST).toTypedArray(),
-                        )
+                    FutoTransformerModelCache.withModel(context, model, modelLocale) {
+                        withTimeoutOrNull(325L) {
+                            it.getSuggestions(
+                                prepared.composer.composedDataSnapshot,
+                                prepared.ngramContext,
+                                prepared.keyboard.proximityInfo.nativeProximityInfo,
+                                context.getSetting(AutocorrectThresholdSetting),
+                                userDictionary.getWords(dictionary.locales).map { it.word },
+                                context.getSetting(SUGGESTION_BLACKLIST).toTypedArray(),
+                            )
+                        }
                     }
                 } catch (error: Throwable) {
                     if (error is CancellationException) throw error
@@ -313,10 +312,11 @@ internal class FutoAutocorrectEngine(
                 }
                 if (result == null) {
                     transformerTimeouts++
-                    transformerDisabled = transformerTimeouts > 5
+                    transformerDisabled = transformerDisabled || transformerTimeouts > 5
                 } else {
                     transformerTimeouts = 0
                 }
+                if (transformerDisabled) FutoTransformerModelCache.evict()
                 result
             }
         } else {
@@ -353,10 +353,10 @@ internal class FutoAutocorrectEngine(
             if (modelsChanged) {
                 modelPreparation?.cancelAndJoin()
                 modelPreparation = null
-                closeLanguageModelLocked()
+                FutoTransformerModelCache.evict()
                 preparedModels = null
-                modelsInvalidated = true
             }
+            evictDisabledTransformer()
             userDictionary.updateWords()
             stateGuard.withLock { session }?.let {
                 startSessionLocked(it, forceReloadDictionaries = resourcesChanged)
@@ -496,6 +496,7 @@ internal class FutoAutocorrectEngine(
         }
         if (!finished) return@finish
         dictionary.onFinishInput(context)
+        FutoTransformerModelCache.clearContext()
         flushHistory()
     }
 
@@ -528,8 +529,8 @@ internal class FutoAutocorrectEngine(
                         Log.w(TAG, "Failed to stop model preparation", it)
                     }
                     modelPreparation = null
-                    runCatching { closeLanguageModelLocked() }.onFailure {
-                        Log.w(TAG, "Failed to close the language model", it)
+                    runCatching { FutoTransformerModelCache.clearContext() }.onFailure {
+                        Log.w(TAG, "Failed to clear the language model context", it)
                     }
                     runCatching(dictionary::closeDictionaries).onFailure {
                         Log.w(TAG, "Failed to close dictionaries", it)
@@ -632,14 +633,8 @@ internal class FutoAutocorrectEngine(
         }
     }
 
-    private suspend fun getLanguageModel(locale: Locale): LanguageModel? {
+    private suspend fun getLanguageModelInfo(locale: Locale): ModelInfoLoader? {
         if (modelPreparation?.isActive == true) return null
-        if (modelsInvalidated) {
-            languageModel?.closeInternalLocked()
-            languageModel = null
-            languageModelKey = null
-            modelsInvalidated = false
-        }
         val models = preparedModels ?: try {
             ModelPaths.getModelOptions(context).also { preparedModels = it }
         } catch (error: Throwable) {
@@ -647,26 +642,20 @@ internal class FutoAutocorrectEngine(
             transformerDisabled = true
             null
         } ?: run {
-            closeLanguageModelLocked()
+            FutoTransformerModelCache.evict()
             return null
         }
-        val model = models[locale.language] ?: run {
-            closeLanguageModelLocked()
+        return models[locale.language] ?: run {
+            FutoTransformerModelCache.evict()
             return null
         }
-        val key = "${locale.language}:${model.path.absolutePath}"
-        if (languageModelKey != key) {
-            closeLanguageModelLocked()
-            languageModel = LanguageModel(context, model, locale)
-            languageModelKey = key
-        }
-        return languageModel
     }
 
-    private suspend fun closeLanguageModelLocked() {
-        languageModel?.closeInternalLocked()
-        languageModel = null
-        languageModelKey = null
+    private suspend fun evictDisabledTransformer() {
+        val preferences = PreferenceUtils.getDefaultSharedPreferences(context)
+        if (!preferences.getBoolean(Settings.PREF_KEY_USE_TRANSFORMER_LM, true)) {
+            FutoTransformerModelCache.evict()
+        }
     }
 
     private fun isTransformerLayoutSupported(request: AutocorrectRequest): Boolean {
