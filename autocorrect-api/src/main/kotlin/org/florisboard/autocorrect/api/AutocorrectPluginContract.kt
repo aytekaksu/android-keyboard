@@ -110,6 +110,8 @@ data class AutocorrectSession(
     val capsMode: Int,
     val allowPersonalizedLearning: Boolean = false,
     val editorFlags: Int = 0,
+    /** Preferred Unicode emoji skin-tone modifier, or `0` for the provider default. */
+    val preferredEmojiSkinToneModifier: Int = 0,
 ) {
     fun toBundle() = Bundle().apply {
         putLong(Keys.SESSION_ID, sessionId)
@@ -119,6 +121,10 @@ data class AutocorrectSession(
         putInt(Keys.CAPS_MODE, capsMode)
         putBoolean(Keys.ALLOW_PERSONALIZED_LEARNING, allowPersonalizedLearning)
         putInt(Keys.EDITOR_FLAGS, editorFlags and AutocorrectEditorFlags.ALL)
+        putInt(
+            Keys.PREFERRED_EMOJI_SKIN_TONE_MODIFIER,
+            preferredEmojiSkinToneModifier.normalizedEmojiSkinToneModifier(),
+        )
     }
 
     companion object {
@@ -130,9 +136,15 @@ data class AutocorrectSession(
             capsMode = bundle.getInt(Keys.CAPS_MODE),
             allowPersonalizedLearning = bundle.getBoolean(Keys.ALLOW_PERSONALIZED_LEARNING),
             editorFlags = bundle.getInt(Keys.EDITOR_FLAGS) and AutocorrectEditorFlags.ALL,
+            preferredEmojiSkinToneModifier = bundle
+                .getInt(Keys.PREFERRED_EMOJI_SKIN_TONE_MODIFIER)
+                .normalizedEmojiSkinToneModifier(),
         )
     }
 }
+
+private fun Int.normalizedEmojiSkinToneModifier() =
+    takeIf { it in 0x1F3FB..0x1F3FF } ?: 0
 
 data class AutocorrectRequest(
     val sessionId: Long,
@@ -407,6 +419,7 @@ internal object Keys {
     const val CAPS_MODE = "capsMode"
     const val ALLOW_PERSONALIZED_LEARNING = "allowPersonalizedLearning"
     const val EDITOR_FLAGS = "editorFlags"
+    const val PREFERRED_EMOJI_SKIN_TONE_MODIFIER = "preferredEmojiSkinToneModifier"
     const val TEXT = "text"
     const val SELECTION_START = "selectionStart"
     const val SELECTION_END = "selectionEnd"
