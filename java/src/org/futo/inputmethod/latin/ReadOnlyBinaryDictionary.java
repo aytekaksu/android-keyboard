@@ -137,6 +137,16 @@ public final class ReadOnlyBinaryDictionary extends Dictionary {
         }
     }
 
+    @Override
+    public void clearSuggestionSessions() {
+        mLock.writeLock().lock();
+        try {
+            mBinaryDictionary.clearSuggestionSessions();
+        } finally {
+            mLock.writeLock().unlock();
+        }
+    }
+
     public long getITrie(final String letters, boolean allowBadWords) {
         if (mBinaryDictionary == null || !mBinaryDictionary.isValidDictionary()) {
             return 0;

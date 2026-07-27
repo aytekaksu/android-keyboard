@@ -287,7 +287,7 @@ internal class FutoAutocorrectEngine(
             } else {
                 SuggestedWords.INPUT_STYLE_TYPING
             },
-            request.requestId.toInt(),
+            request.sessionId.toInt(),
         ) { dictionaryWords = it }
         val filteredDictionaryWords = dictionaryWords?.let {
             suggestionBlacklist.filterBlacklistedSuggestions(it)
@@ -507,16 +507,51 @@ internal class FutoAutocorrectEngine(
             if (session?.sessionId != sessionId) {
                 false
             } else {
-                session = null
-                lastRequest = null
-                candidates.clear()
+                clearSessionStateLocked()
                 true
             }
         }
         if (!finished) return@finish
-        dictionary.onFinishInput(context)
-        FutoTransformerModelCache.clearContext()
-        flushHistory()
+        finishSessionLifecycle(hadSession = true)
+    }
+
+    suspend fun unbindHost() = operationGuard.withLock {
+        val hadSession = stateGuard.withLock {
+            val active = session != null
+            clearSessionStateLocked()
+            active
+        }
+        finishSessionLifecycle(hadSession)
+    }
+
+    private fun clearSessionStateLocked() {
+        session = null
+        lastRequest = null
+        candidates.clear()
+        lastKeyboard = null
+        keyboardSignature = 0
+        transformerTimeouts = 0
+        transformerDisabled = false
+    }
+
+    private suspend fun finishSessionLifecycle(hadSession: Boolean) {
+        try {
+            ProviderSessionLanguages.replace(emptyList())
+        } finally {
+            try {
+                dictionary.clearSuggestionSessions()
+            } finally {
+                try {
+                    if (hadSession) dictionary.onFinishInput(context)
+                } finally {
+                    try {
+                        FutoTransformerModelCache.clearContext()
+                    } finally {
+                        if (hadSession || historyFlushJob != null) flushHistory()
+                    }
+                }
+            }
+        }
     }
 
     suspend fun clearHistory(): Boolean = operationGuard.withLock {

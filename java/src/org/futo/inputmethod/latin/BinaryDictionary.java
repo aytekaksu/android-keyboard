@@ -679,7 +679,7 @@ public final class BinaryDictionary extends Dictionary {
     }
 
     @Override
-    public void close() {
+    public void clearSuggestionSessions() {
         synchronized (mDicTraverseSessions) {
             final int sessionsSize = mDicTraverseSessions.size();
             for (int index = 0; index < sessionsSize; ++index) {
@@ -690,6 +690,11 @@ public final class BinaryDictionary extends Dictionary {
             }
             mDicTraverseSessions.clear();
         }
+    }
+
+    @Override
+    public void close() {
+        clearSuggestionSessions();
         closeInternalLocked();
     }
 

@@ -136,6 +136,12 @@ public final class DictionaryCollection extends Dictionary {
             dict.close();
     }
 
+    @Override
+    public void clearSuggestionSessions() {
+        for (final Dictionary dict : mDictionaries)
+            dict.clearSuggestionSessions();
+    }
+
     // Warning: this is not thread-safe. Take necessary precaution when calling.
     public void addDictionary(final Dictionary newDict) {
         if (null == newDict) return;

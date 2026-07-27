@@ -106,6 +106,8 @@ public interface DictionaryFacilitator {
      */
     void onFinishInput(Context context);
 
+    void clearSuggestionSessions();
+
     void onEmailTyped(String email);
 
     boolean isActive();

@@ -20,6 +20,7 @@ import org.futo.inputmethod.latin.common.NativeSuggestOptions;
 import org.futo.inputmethod.latin.define.DecoderSpecificConstants;
 import org.futo.inputmethod.latin.utils.JniUtils;
 
+import java.util.Arrays;
 import java.util.Locale;
 
 public final class DicTraverseSession {
@@ -84,6 +85,21 @@ public final class DicTraverseSession {
     }
 
     public void close() {
+        Arrays.fill(mInputCodePoints, 0);
+        for (final int[] previousWord : mPrevWordCodePointArrays) {
+            if (previousWord != null) {
+                Arrays.fill(previousWord, 0);
+            }
+        }
+        Arrays.fill(mPrevWordCodePointArrays, null);
+        Arrays.fill(mIsBeginningOfSentenceArray, false);
+        Arrays.fill(mOutputSuggestionCount, 0);
+        Arrays.fill(mOutputCodePoints, 0);
+        Arrays.fill(mSpaceIndices, 0);
+        Arrays.fill(mOutputScores, 0);
+        Arrays.fill(mOutputTypes, 0);
+        Arrays.fill(mOutputAutoCommitFirstWordConfidence, 0);
+        Arrays.fill(mInputOutputWeightOfLangModelVsSpatialModel, 0);
         closeInternal();
     }
 

@@ -244,7 +244,7 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
 
         var debugLogUntil: Long = 0L
 
-        private var prevKeyboard: Keyboard? = null
+        @Volatile private var prevKeyboard: Keyboard? = null
         var appliedLayoutInfo: LayoutInfoForModel = LayoutInfoForModel.DEFAULT
             private set
 
@@ -437,7 +437,6 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
             ?: emptyList()
 
         val decoder = getOrInitDecoder()
-        decoder.setContext(wordsContext)
         appliedTrieWeights = trieWeights
 
         val isMultiSwipe = (left.size + right.size) > 1
@@ -454,6 +453,7 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
                 Log.e("SwipeDecoderDictionary", "Applied tries are blank! $appliedTries")
                 return null
             }
+            decoder.setContext(wordsContext)
             decoder.recognize(
                  left.toTypedArray(), right.toTypedArray(),
                  topK = topK,
@@ -552,6 +552,13 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
             appliedTrieWeights = FloatArray(0)
             appliedScoring = SwipeDecoder.Scoring(0.0f, 0.0f, 0.0f, 0.0f)
             decoderToClose?.close()
+        }
+    }
+
+    override fun clearSuggestionSessions() {
+        synchronized(BinaryDictionary.sTrieUsageLock) {
+            prevKeyboard = null
+            decoder?.clearContext()
         }
     }
 

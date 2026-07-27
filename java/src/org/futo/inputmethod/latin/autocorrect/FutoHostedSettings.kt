@@ -360,6 +360,11 @@ internal class FutoHostedSettings(
         personalDictionarySnapshot = null
         clearPersonalEditor()
         personalPage = 0
+        blacklistWord = ""
+        selectedBlacklistWord = null
+        blacklistPage = 0
+        documentStatus = null
+        documentSuccessStatus = null
     }
 
     suspend fun setValue(itemId: String, value: String): Boolean {

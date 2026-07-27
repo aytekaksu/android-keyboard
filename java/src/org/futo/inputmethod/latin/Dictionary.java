@@ -170,6 +170,11 @@ public abstract class Dictionary {
         // empty base implementation
     }
 
+    /** Releases text and input geometry retained only for an active suggestion session. */
+    public void clearSuggestionSessions() {
+        // empty base implementation
+    }
+
     /**
      * Subclasses may override to indicate that this Dictionary is not yet properly initialized.
      */

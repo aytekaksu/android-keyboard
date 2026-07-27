@@ -213,6 +213,18 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
         });
     }
 
+    @Override
+    public void clearSuggestionSessions() {
+        mLock.writeLock().lock();
+        try {
+            if (mBinaryDictionary != null) {
+                mBinaryDictionary.clearSuggestionSessions();
+            }
+        } finally {
+            mLock.writeLock().unlock();
+        }
+    }
+
     protected Map<String, String> getHeaderAttributeMap() {
         HashMap<String, String> attributeMap = new HashMap<>();
         if (mAdditionalAttributeMap != null) {

@@ -51,9 +51,13 @@ class FlorisAutocorrectService : AutocorrectPluginService() {
         engineScope.cancel()
     }
 
-    override fun onHostUnbound() {
+    override suspend fun onHostUnboundCleanup() {
         synchronized(authorizedHosts) { authorizedHosts.clear() }
-        hostedSettings.onUiClosed()
+        try {
+            engine.unbindHost()
+        } finally {
+            hostedSettings.onUiClosed()
+        }
     }
 
     override suspend fun onStartSession(session: AutocorrectSession) {
