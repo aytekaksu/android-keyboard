@@ -115,9 +115,7 @@ import org.futo.inputmethod.latin.DisplayTop4Setting
 import org.futo.inputmethod.latin.R
 import org.futo.inputmethod.latin.SuggestedWords
 import org.futo.inputmethod.latin.SuggestedWords.SuggestedWordInfo
-import org.futo.inputmethod.latin.SuggestedWords.SuggestedWordInfo.KIND_EMOJI_SUGGESTION
 import org.futo.inputmethod.latin.SuggestedWords.SuggestedWordInfo.KIND_TYPED
-import org.futo.inputmethod.latin.SuggestionBlacklist
 import org.futo.inputmethod.latin.common.Constants
 import org.futo.inputmethod.latin.suggestions.SuggestionStripViewListener
 import org.futo.inputmethod.latin.uix.actions.FavoriteActions
@@ -382,100 +380,6 @@ fun RowScope.SuggestionItem(words: SuggestedWords, idx: Int, isPrimary: Boolean,
 }
 
 
-data class SuggestionLayout(
-    /** Set to the word to be autocorrected to */
-    val autocorrectMatch: SuggestedWordInfo?,
-
-    /** Other words, sorted by likelihood */
-    val sortedMatches: List<SuggestedWordInfo>,
-
-    /** Emoji suggestions if they are to be shown */
-    val emojiMatches: List<SuggestedWordInfo>,
-
-    /** The exact word the user typed */
-    val verbatimWord: SuggestedWordInfo?,
-
-    /** Set to true if the best match is so unlikely that we should show verbatim instead */
-    val areSuggestionsClueless: Boolean,
-
-    /** Set to true if this is a gesture update, and we should only show one suggestion */
-    val isGestureBatch: Boolean,
-
-    /** The primary tail batch element, if present it should be highlighted */
-    val swipePrimaryElement: SuggestedWordInfo?,
-
-    val presentableSuggestions: List<SuggestedWordInfo>
-)
-
-fun SuggestedWords.getInfoOrNull(idx: Int): SuggestedWordInfo? = try {
-    getInfo(idx)
-} catch(e: IndexOutOfBoundsException) {
-    null
-}
-
-fun makeSuggestionLayout(words: SuggestedWords, blacklist: SuggestionBlacklist?, swipeTailRemovePrimarySuggestion: Boolean): SuggestionLayout {
-    val isGestureBatch = words.mInputStyle == SuggestedWords.INPUT_STYLE_UPDATE_BATCH
-    val isSwipeTail = words.mInputStyle == SuggestedWords.INPUT_STYLE_TAIL_BATCH
-
-    val typedWord = words.getInfoOrNull(SuggestedWords.INDEX_OF_TYPED_WORD)?.let {
-        if(it.kind == KIND_TYPED) { it } else { null }
-    }?.let {
-        if(blacklist?.isSuggestedWordOk(it) != false) {
-            it
-        } else {
-            null
-        }
-    }
-
-    val autocorrectMatch = words.getInfoOrNull(SuggestedWords.INDEX_OF_AUTO_CORRECTION)?.let {
-        if(words.mWillAutoCorrect) { it } else { null }
-    }
-
-    // We actually have to avoid sorting these because they are provided sorted in an important order
-
-    val emojiMatches = words.mSuggestedWordInfoList.filter {
-        it.kind == KIND_EMOJI_SUGGESTION
-    }
-
-    val sortedMatches = words.mSuggestedWordInfoList.filter {
-        it != typedWord && it.kind != KIND_TYPED && it != autocorrectMatch && !emojiMatches.contains(it)
-            // Do not include the verbatim word when autocorrecting to avoid such duplicate word situation:
-            // [ hid | **his** | "hid" ]
-            && (isGestureBatch || autocorrectMatch == null || typedWord == null || it.mWord != typedWord.mWord)
-    }.toMutableList()
-
-    var swipePrimaryElement: SuggestedWordInfo? = null
-    if(isSwipeTail && sortedMatches.size > 1) {
-        if(swipeTailRemovePrimarySuggestion) {
-            sortedMatches.removeAt(0)
-        } else {
-            swipePrimaryElement = sortedMatches[0]
-        }
-    }
-
-    val areSuggestionsClueless = (autocorrectMatch ?: sortedMatches.getOrNull(0))?.let {
-        it.mOriginatesFromTransformerLM && it.mScore < -50
-    } ?: false
-
-    val presentableSuggestions = (
-            listOf(
-                typedWord,
-                autocorrectMatch,
-            ) + sortedMatches
-    ).filterNotNull()
-
-    return SuggestionLayout(
-        autocorrectMatch = autocorrectMatch,
-        sortedMatches = sortedMatches,
-        emojiMatches = emojiMatches,
-        verbatimWord = typedWord,
-        areSuggestionsClueless = areSuggestionsClueless,
-        isGestureBatch = isGestureBatch,
-        presentableSuggestions = presentableSuggestions,
-        swipePrimaryElement = swipePrimaryElement
-    )
-}
-
 @Composable
 fun RowScope.SuggestionItems(words: SuggestedWords, onClick: (i: Int) -> Unit, onLongClick: (i: Int) -> Unit) {
     val layout = makeSuggestionLayout(
@@ -501,41 +405,9 @@ fun RowScope.SuggestionItems(words: SuggestedWords, onClick: (i: Int) -> Unit, o
         }
     }
 
-    when {
-        layout.isGestureBatch ||
-                (layout.emojiMatches.isEmpty() && layout.presentableSuggestions.size <= 1) ->
-            suggestionItem(layout.presentableSuggestions.firstOrNull())
-
-        layout.autocorrectMatch != null -> {
-            var supplementalSuggestionIndex = 0
-            if(layout.emojiMatches.isEmpty()) {
-                suggestionItem(layout.sortedMatches.getOrNull(supplementalSuggestionIndex++))
-            } else {
-                suggestionItem(layout.emojiMatches[0])
-            }
-            SuggestionSeparator()
-            suggestionItem(layout.autocorrectMatch)
-            SuggestionSeparator()
-
-            if(layout.verbatimWord != null && layout.verbatimWord.mWord != layout.autocorrectMatch.mWord) {
-                suggestionItem(layout.verbatimWord)
-            } else {
-                suggestionItem(layout.sortedMatches.getOrNull(supplementalSuggestionIndex))
-            }
-        }
-
-        else -> {
-            var supplementalSuggestionIndex = 1
-            if(layout.emojiMatches.isEmpty()) {
-                suggestionItem(layout.sortedMatches.getOrNull(supplementalSuggestionIndex++))
-            } else {
-                suggestionItem(layout.emojiMatches[0])
-            }
-            SuggestionSeparator()
-            suggestionItem(layout.sortedMatches.getOrNull(0))
-            SuggestionSeparator()
-            suggestionItem(layout.sortedMatches.getOrNull(supplementalSuggestionIndex))
-        }
+    layout.classicSuggestions().forEachIndexed { index, suggestion ->
+        if (index > 0) SuggestionSeparator()
+        suggestionItem(suggestion)
     }
 }
 

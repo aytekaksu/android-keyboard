@@ -8,15 +8,12 @@
 package org.futo.inputmethod.latin
 
 import android.content.Context
-import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import org.futo.inputmethod.latin.uix.DataStoreHelper
-import org.futo.inputmethod.latin.uix.SettingsKey
 import java.io.FileNotFoundException
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -31,6 +28,7 @@ object EmojiSuggestionIndex {
     private val loads = ConcurrentHashMap<String, Deferred<Unit>>()
     private val shortcuts = ConcurrentHashMap<String, Map<String, String>>()
     @Volatile private var people = emptySet<String>()
+    @Volatile private var preferredSkinToneModifier = 0
 
     suspend fun loadForLanguage(context: Context, locale: Locale) {
         val applicationContext = context.applicationContext
@@ -63,13 +61,16 @@ object EmojiSuggestionIndex {
     fun getShortcut(locale: Locale, text: String): String? =
         shortcuts[locale.language]?.get(text)
 
-    fun transformToLastSkinTone(emoji: String): String {
-        val modifier = DataStoreHelper.getSetting(LAST_USED_SKIN_TONE)
-        if (modifier.isEmpty()) return emoji
-        return emoji.split("\u200D").joinToString("\u200D") { part ->
-            if (part in people) part + modifier else part
-        }
+    fun setPreferredSkinToneModifier(modifier: Int) {
+        preferredSkinToneModifier = normalizedSkinToneModifier(modifier)
     }
+
+    fun clearPreferredSkinToneModifier() {
+        preferredSkinToneModifier = 0
+    }
+
+    fun transformToPreferredSkinTone(emoji: String): String =
+        applyPreferredSkinTone(emoji, preferredSkinToneModifier, people)
 
     private fun load(key: String, block: suspend () -> Unit): Deferred<Unit> {
         loads[key]?.let { return it }
@@ -85,9 +86,26 @@ object EmojiSuggestionIndex {
         created.start()
         return created
     }
+}
 
-    private val LAST_USED_SKIN_TONE = SettingsKey(
-        stringPreferencesKey("last_used_skin_tone"),
-        "",
-    )
+internal fun normalizedSkinToneModifier(modifier: Int) =
+    modifier.takeIf { it in 0x1F3FB..0x1F3FF } ?: 0
+
+private val skinToneModifiers =
+    (0x1F3FB..0x1F3FF).map { String(Character.toChars(it)) }
+
+internal fun applyPreferredSkinTone(
+    emoji: String,
+    modifier: Int,
+    toneableEmoji: Set<String>,
+): String {
+    val normalized = normalizedSkinToneModifier(modifier)
+    if (normalized == 0) return emoji
+    val tone = String(Character.toChars(normalized))
+    return emoji.split("\u200D").joinToString("\u200D") { part ->
+        val untoned = skinToneModifiers.fold(part) { value, existing ->
+            value.replace(existing, "")
+        }
+        if (untoned in toneableEmoji) untoned + tone else part
+    }
 }

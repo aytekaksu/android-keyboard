@@ -69,8 +69,10 @@ import org.futo.inputmethod.latin.uix.PreferenceUtils
 import org.futo.inputmethod.latin.uix.SHOW_EMOJI_SUGGESTIONS
 import org.futo.inputmethod.latin.uix.SUGGESTION_BLACKLIST
 import org.futo.inputmethod.latin.uix.actions.PersistentEmojiState
+import org.futo.inputmethod.latin.uix.classicSuggestions
 import org.futo.inputmethod.latin.uix.dataStore
 import org.futo.inputmethod.latin.uix.getSetting
+import org.futo.inputmethod.latin.uix.makeSuggestionLayout
 import org.futo.inputmethod.latin.uix.setSettingAndAwaitCache
 import org.futo.inputmethod.latin.utils.NgramContextUtils
 import org.futo.inputmethod.latin.xlm.AllowTransformerOnNonQWERTYLayouts
@@ -166,6 +168,11 @@ internal class FutoAutocorrectEngine(
             lastKeyboard = null
             keyboardSignature = 0
         }
+        if (BuildConfig.FLAVOR == PROVIDER_FLAVOR) {
+            EmojiSuggestionIndex.setPreferredSkinToneModifier(
+                newSession.preferredEmojiSkinToneModifier,
+            )
+        }
         val locales = buildList {
             add(Locale.forLanguageTag(newSession.primaryLanguageTag))
             newSession.secondaryLanguageTags.mapTo(this) { Locale.forLanguageTag(it) }
@@ -207,14 +214,16 @@ internal class FutoAutocorrectEngine(
                 }
             }
         }
-        val usePersonalized = settings.current.mUsePersonalizedDicts &&
-            newSession.allowPersonalizedLearning &&
-            !settings.current.mInputAttributes.mNoLearning
+        val personalization = personalizationPolicy(
+            settings.current.mUsePersonalizedDicts,
+            newSession.allowPersonalizedLearning,
+            !settings.current.mInputAttributes.mNoLearning,
+        )
         dictionary.resetDictionaries(
             context,
             locales.ifEmpty { listOf(primaryLocale) },
             false,
-            usePersonalized,
+            personalization.allowReads,
             forceReloadDictionaries,
             null,
             "",
@@ -342,7 +351,7 @@ internal class FutoAutocorrectEngine(
             prepared = prepared,
             dictionaryWords = filteredDictionaryWords,
             transformerWords = transformerWords.orEmpty(),
-            allowCandidateRemoval = activeSession.allowPersonalizedLearning,
+            allowCandidateRemoval = currentPersonalizationPolicy(activeSession).allowWrites,
         )
         val boostedCodePoints = if (
             !prepared.isGesture &&
@@ -440,15 +449,17 @@ internal class FutoAutocorrectEngine(
         candidateId: String,
     ): Boolean = operationGuard.withLock remove@ {
         val record = stateGuard.withLock {
-            session
-                ?.takeIf { it.sessionId == sessionId && it.allowPersonalizedLearning }
-                ?.let { candidates[candidateId] }
+            if (
+                session?.sessionId != sessionId ||
+                !isLearningAllowed()
+            ) {
+                null
+            } else {
+                candidates[candidateId]
+            }
         } ?: return@remove false
         replaceBlacklistLocked(context.getSetting(SUGGESTION_BLACKLIST) + record.word)
-        if (
-            isLearningAllowed() &&
-            !record.isEmoji
-        ) {
+        if (!record.isEmoji) {
             dictionary.unlearnFromUserHistory(
                 record.word,
                 record.ngramContext,
@@ -550,6 +561,9 @@ internal class FutoAutocorrectEngine(
         keyboardSignature = 0
         transformerTimeouts = 0
         transformerDisabled = false
+        if (BuildConfig.FLAVOR == PROVIDER_FLAVOR) {
+            EmojiSuggestionIndex.clearPreferredSkinToneModifier()
+        }
     }
 
     private suspend fun finishSessionLifecycle(hadSession: Boolean) {
@@ -920,28 +934,56 @@ internal class FutoAutocorrectEngine(
             val index = rankedWords.indexOfFirst { it.info.word == word }
             if (index > 0) rankedWords.add(0, rankedWords.removeAt(index))
         }
-        val ordered = buildList {
-            if (!prepared.isGesture && prepared.typedWord.isNotBlank()) {
-                add(
-                    typedInfo ?: SuggestedWordInfo(
-                        prepared.typedWord,
-                        "",
-                        0,
-                        SuggestedWordInfo.KIND_TYPED,
-                        null,
-                        0,
-                        0,
-                    ),
-                )
-            }
-            addAll(rankedWords.map(RankedWord::info))
-        }.filter { info ->
-            info === typedInfo ||
-                info.word == prepared.typedWord ||
+        val typedSuggestion = if (!prepared.isGesture && prepared.typedWord.isNotBlank()) {
+            typedInfo ?: SuggestedWordInfo(
+                prepared.typedWord,
+                "",
+                0,
+                SuggestedWordInfo.KIND_TYPED,
+                null,
+                0,
+                0,
+            )
+        } else {
+            null
+        }
+        val eligibleRanked = rankedWords.map(RankedWord::info).filter { info ->
+            info.word == prepared.typedWord ||
                 (suggestionBlacklist.isSuggestedWordOk(info) &&
                     (!blockPotentiallyOffensive || !info.isPossiblyOffensive))
-        }.distinctBy(SuggestedWordInfo::getWord)
-            .take(request.maxCandidateCount)
+        }
+        val autoInfo = typedSuggestion?.let {
+            eligibleRanked.firstOrNull { info -> info.word == autoWord }
+        }
+        val eligible = listOfNotNull(typedSuggestion) + eligibleRanked
+        val layoutWords = buildList {
+            typedSuggestion?.let(::add)
+            autoInfo?.let(::add)
+            eligible.filterTo(this) { it !== typedSuggestion && it !== autoInfo }
+        }
+        val layout = makeSuggestionLayout(
+            SuggestedWords(
+                ArrayList(layoutWords),
+                null,
+                typedSuggestion,
+                dictionaryWords.mTypedWordValid,
+                autoInfo != null,
+                false,
+                if (prepared.isGesture) {
+                    SuggestedWords.INPUT_STYLE_UPDATE_BATCH
+                } else {
+                    dictionaryWords.mInputStyle
+                },
+                SuggestedWords.NOT_A_SEQUENCE_NUMBER,
+            ),
+            null,
+            false,
+        )
+        val ordered = orderProviderSuggestions(
+            layout.classicSuggestions(),
+            eligible,
+            request.maxCandidateCount,
+        )
         val replacementStart = request.currentWordStart.takeIf {
             !prepared.isGesture && it >= 0
         } ?: -1
@@ -966,7 +1008,7 @@ internal class FutoAutocorrectEngine(
                 text = info.word,
                 confidence = 1.0 - index.toDouble() / (ordered.size + 1.0),
                 kind = kind,
-                autoCommit = info.word == autoWord,
+                autoCommit = info.word == autoInfo?.word,
                 removable = allowCandidateRemoval && kind != AutocorrectCandidateKind.TYPED,
                 visible = settings.current.isSuggestionsEnabledPerUserSettings,
                 replacementStart = replacementStart,
@@ -1024,9 +1066,14 @@ internal class FutoAutocorrectEngine(
         historyFlushJob = null
     }
 
-    private fun isLearningAllowed() = session?.allowPersonalizedLearning == true &&
-        settings.current.mUsePersonalizedDicts &&
-        !settings.current.mInputAttributes.mNoLearning
+    private fun currentPersonalizationPolicy(activeSession: AutocorrectSession? = session) =
+        personalizationPolicy(
+            settings.current.mUsePersonalizedDicts,
+            activeSession?.allowPersonalizedLearning == true,
+            !settings.current.mInputAttributes.mNoLearning,
+        )
+
+    private fun isLearningAllowed() = currentPersonalizationPolicy().allowWrites
 
     private fun nowSeconds() = System.currentTimeMillis() / 1_000L
 
@@ -1036,6 +1083,29 @@ internal class FutoAutocorrectEngine(
         private const val HISTORY_FLUSH_DELAY_MS = 5_000L
     }
 }
+
+internal fun orderProviderSuggestions(
+    classic: List<SuggestedWordInfo?>,
+    eligible: List<SuggestedWordInfo>,
+    maxCandidateCount: Int,
+) = (classic.asSequence().filterNotNull() + eligible.asSequence())
+    .distinctBy(SuggestedWordInfo::getWord)
+    .take(maxCandidateCount)
+    .toList()
+
+internal data class PersonalizationPolicy(
+    val allowReads: Boolean,
+    val allowWrites: Boolean,
+)
+
+internal fun personalizationPolicy(
+    userEnabled: Boolean,
+    sessionAllowsLearning: Boolean,
+    editorAllowsLearning: Boolean,
+) = PersonalizationPolicy(
+    allowReads = userEnabled,
+    allowWrites = userEnabled && sessionAllowsLearning && editorAllowsLearning,
+)
 
 internal fun committedEmailForFinish(
     sessionId: Long,

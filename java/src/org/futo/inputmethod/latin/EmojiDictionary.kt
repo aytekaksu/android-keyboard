@@ -38,7 +38,7 @@ class EmojiDictionary(locale: Locale) : Dictionary(TYPE_EMOJI, locale) {
 
         if(emoji != null) {
             emoji = if (BuildConfig.FLAVOR == PROVIDER_FLAVOR) {
-                EmojiSuggestionIndex.transformToLastSkinTone(emoji)
+                EmojiSuggestionIndex.transformToPreferredSkinTone(emoji)
             } else {
                 PersistentEmojiState.transformEmojiToLastSkinTone(emoji)
             }
