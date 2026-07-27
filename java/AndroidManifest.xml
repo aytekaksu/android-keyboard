@@ -57,6 +57,21 @@
                  android:resource="@xml/method"/>
         </service>
 
+        <service
+            android:name=".autocorrect.FlorisAutocorrectService"
+            android:exported="true"
+            android:label="FUTO predictive text">
+            <intent-filter>
+                <action android:name="org.florisboard.autocorrect.api.action.BIND_PROVIDER" />
+            </intent-filter>
+            <meta-data
+                android:name="org.florisboard.autocorrect.api.PROTOCOL_VERSION"
+                android:value="1" />
+            <meta-data
+                android:name="org.florisboard.autocorrect.api.SETTINGS_ACTIVITY"
+                android:value=".autocorrect.FlorisAutocorrectSettingsActivity" />
+        </service>
+
         <!--
         <service android:name=".spellcheck.AndroidSpellCheckerService"
              android:label="@string/spell_checker_service_name"
@@ -111,6 +126,23 @@
             </intent-filter>
 
         </activity>
+
+        <activity
+            android:name=".autocorrect.FlorisAutocorrectSettingsActivity"
+            android:exported="true"
+            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar" />
+        <activity
+            android:name=".autocorrect.FlorisModelSettingsActivity"
+            android:exported="true"
+            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar" />
+        <activity
+            android:name=".autocorrect.FlorisDictionarySettingsActivity"
+            android:exported="true"
+            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar" />
+        <activity
+            android:name=".autocorrect.FlorisBlacklistSettingsActivity"
+            android:exported="true"
+            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar" />
 
         <activity android:name=".permissions.PermissionsActivity"
              android:theme="@android:style/Theme.Translucent.NoTitleBar"

@@ -101,22 +101,36 @@ class SettingsActivity : ComponentActivity(), DynamicThemeProviderOwner {
     }
 
     companion object {
+        private const val EXTRA_PROVIDER_MODE = "org.futo.inputmethod.latin.PROVIDER_MODE"
         private var pollJob: Job? = null
 
         @JvmStatic
-        fun openToNavDest(context: Context, navDest: String?) {
+        fun openToNavDest(
+            context: Context,
+            navDest: String?,
+            providerMode: Boolean = false,
+        ) {
             val intent = Intent()
             intent.setClass(context, SettingsActivity::class.java)
             intent.setFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             )
             if(navDest != null) intent.putExtra("navDest", navDest)
+            if(providerMode) intent.putExtra(EXTRA_PROVIDER_MODE, true)
             context.startActivity(intent)
         }
     }
 
+    private val providerMode: Boolean
+        get() = intent?.getBooleanExtra(EXTRA_PROVIDER_MODE, false) == true
+
     @OptIn(DelicateCoroutinesApi::class)
     fun updateSystemState() {
+        if(providerMode) {
+            pollJob?.cancel()
+            pollJob = null
+            return
+        }
         val inputMethodEnabled = isInputMethodEnabled()
         val inputMethodSelected = isDefaultIMECurrent()
         this.inputMethodEnabled.value = inputMethodEnabled
@@ -174,12 +188,16 @@ class SettingsActivity : ComponentActivity(), DynamicThemeProviderOwner {
                             color = MaterialTheme.colorScheme.background
                         ) {
                             Box(Modifier.safeDrawingPadding()) {
-                                SetupOrMain(
-                                    inputMethodEnabled.value,
-                                    inputMethodSelected.value,
-                                    doublePackage.value
-                                ) {
+                                if(providerMode) {
                                     SettingsNavigator(navController = navController)
+                                } else {
+                                    SetupOrMain(
+                                        inputMethodEnabled.value,
+                                        inputMethodSelected.value,
+                                        doublePackage.value
+                                    ) {
+                                        SettingsNavigator(navController = navController)
+                                    }
                                 }
                             }
                         }
@@ -262,6 +280,7 @@ class SettingsActivity : ComponentActivity(), DynamicThemeProviderOwner {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        updateContent()
         handleIntent(intent)
     }
 
