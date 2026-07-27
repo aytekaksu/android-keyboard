@@ -26,4 +26,8 @@ The APK uses per-ABI delivery, resource shrinking, a curated asset set, and a na
 voice recognition, fine-tuning, or training code. Full upstream sources remain in Git solely for
 fork provenance and future auditing; they are not equivalent to packaged APK contents.
 
+For data compatibility, the provider retains the application ID
+`org.futo.inputmethod.latin.unstable`. It therefore cannot coexist with the full FUTO Keyboard
+unstable variant, and APKs signed by different keys cannot update each other in place.
+
 See [README.md](README.md), [NOTICE](NOTICE), and [LICENSE.md](LICENSE.md).

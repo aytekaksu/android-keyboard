@@ -15,6 +15,12 @@ declarative settings content.
 > still show any separately installed APK under system Settings → Apps; ordinary apps cannot opt
 > out of that system inventory.
 
+> [!IMPORTANT]
+> To preserve existing provider data, this fork retains FUTO Keyboard unstable's application ID,
+> `org.futo.inputmethod.latin.unstable`. The plugin therefore cannot coexist with that variant of
+> the full FUTO Keyboard, and a build signed by a different key cannot update it in place. Remove
+> one before installing the other; export any data you need first.
+
 ## Included capabilities
 
 - dictionary correction, completion, next-word prediction, and ranking;
