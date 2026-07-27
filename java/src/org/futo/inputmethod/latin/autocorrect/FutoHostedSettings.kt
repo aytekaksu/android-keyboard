@@ -96,6 +96,7 @@ internal class FutoHostedSettings(
     private var blacklistPage = 0
     private var paymentReminderDays = "30"
     private var documentStatus: String? = null
+    private var documentStatusItemId: String? = null
     private var documentSuccessStatus: String? = null
 
     suspend fun ui(languageTags: List<String>): AutocorrectPluginUi {
@@ -364,6 +365,7 @@ internal class FutoHostedSettings(
         selectedBlacklistWord = null
         blacklistPage = 0
         documentStatus = null
+        documentStatusItemId = null
         documentSuccessStatus = null
     }
 
@@ -516,6 +518,7 @@ internal class FutoHostedSettings(
 
     suspend fun document(document: AutocorrectPluginDocument): Boolean {
         documentSuccessStatus = null
+        documentStatusItemId = document.itemId
         val operation = when (document.itemId) {
             "modelImport" -> "Model import"
             "modelExport" -> "Model export"
@@ -634,7 +637,7 @@ internal class FutoHostedSettings(
             } else {
                 "Models can be managed while the transformer is off, but cannot be activated until it is enabled."
             },
-            items = listOfNotNull(documentStatusItem()) + listOf(
+            items = listOfNotNull(documentStatusItem(PAGE_MODELS)) + listOf(
                 choice(
                     id = "modelLanguage",
                     title = "Language",
@@ -704,7 +707,7 @@ internal class FutoHostedSettings(
             id = PAGE_DICTIONARIES,
             title = "Language dictionaries",
             summary = "A custom binary dictionary replaces the built-in dictionary for the selected FlorisBoard language.",
-            items = listOfNotNull(documentStatusItem()) + listOf(
+            items = listOfNotNull(documentStatusItem(PAGE_DICTIONARIES)) + listOf(
                 choice(
                     id = "dictionaryLanguage",
                     title = "Language",
@@ -1826,7 +1829,8 @@ internal class FutoHostedSettings(
     private fun pagingAction(id: String, title: String, enabled: Boolean) =
         action(id, title, enabled = enabled, icon = AutocorrectPluginUiIcon.REFRESH)
 
-    private fun documentStatusItem() = documentStatus?.let {
+    private fun documentStatusItem(pageId: String? = null) = documentStatus?.let {
+        if (!isHostedDocumentStatusVisibleOn(documentStatusItemId, pageId)) return@let null
         info(
             id = "documentStatus",
             title = if ("failed" in it.lowercase(Locale.ROOT)) {
@@ -1953,3 +1957,10 @@ private val FUTO_PAYMENT_LICENSE = SettingsKey(
 )
 
 private class DocumentFailure(message: String) : Exception(message)
+
+internal fun isHostedDocumentStatusVisibleOn(itemId: String?, pageId: String?): Boolean = when {
+    pageId == null -> true
+    itemId == "modelImport" || itemId == "modelExport" -> pageId == "models"
+    itemId == "dictionaryImport" -> pageId == "dictionaries"
+    else -> false
+}
