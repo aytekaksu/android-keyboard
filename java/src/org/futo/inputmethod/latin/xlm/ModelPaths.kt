@@ -12,9 +12,9 @@ import org.futo.inputmethod.latin.R
 import org.futo.inputmethod.latin.uix.SettingsKey
 import org.futo.inputmethod.latin.uix.getSetting
 import org.futo.inputmethod.latin.uix.setSetting
+import org.futo.inputmethod.latin.utils.AtomicFileInstaller
 import org.futo.inputmethod.latin.utils.JniUtils
 import java.io.File
-import java.io.FileOutputStream
 
 
 val BASE_MODEL_RESOURCE = R.raw.ml4_q6_k
@@ -62,6 +62,8 @@ class ModelInfoLoader(
 
 object ModelPaths {
     val modelOptionsUpdated = MutableSharedFlow<Unit>(replay = 0)
+    private var validatedBaseModel: Pair<Long, Long>? = null
+    private var baseModelResourceSize: Long? = null
 
     fun exportModel(context: Context, uri: Uri, file: File) {
         context.contentResolver.openOutputStream(uri)!!.use { outputStream ->
@@ -223,6 +225,27 @@ object ModelPaths {
         return modelDirectory
     }
 
+    private fun isValidBaseModel(file: File, minimumSize: Long): Boolean {
+        if (!file.isFile || file.length() < minimumSize) return false
+        val fingerprint = file.length() to file.lastModified()
+        if (validatedBaseModel == fingerprint) return true
+        val hasMagic = file.inputStream().use { input ->
+            val bytes = ByteArray(4)
+            input.read(bytes) == bytes.size &&
+                bytes[0] == 'G'.code.toByte() &&
+                bytes[1] == 'G'.code.toByte() &&
+                bytes[2] == 'U'.code.toByte() &&
+                bytes[3] == 'F'.code.toByte()
+        }
+        if (!hasMagic) return false
+        val valid = runCatching {
+            ModelInfoLoader(file, BASE_MODEL_NAME).loadDetails() != null
+        }.getOrDefault(false)
+        if (valid) validatedBaseModel = fingerprint
+        return valid
+    }
+
+    @Synchronized
     fun ensureDefaultModelExists(context: Context) {
         val directory = getModelDirectory(context)
 
@@ -231,17 +254,16 @@ object ModelPaths {
         if(oldFile.isFile) oldFile.delete()
 
         val tgtFile = File(directory, "$BASE_MODEL_NAME.gguf")
-        if(!tgtFile.isFile) {
-            context.resources.openRawResource(BASE_MODEL_RESOURCE).use { inputStream ->
-                FileOutputStream(tgtFile).use { outputStream ->
-                    var read = 0
-                    val bytes = ByteArray(1024)
-                    while (inputStream.read(bytes).also { read = it } != -1) {
-                        outputStream.write(bytes, 0, read)
-                    }
-                }
-            }
-        }
+        val resourceSize = baseModelResourceSize ?: context.resources
+            .openRawResource(BASE_MODEL_RESOURCE)
+            .use { it.available().toLong() }
+            .also { baseModelResourceSize = it }
+        AtomicFileInstaller.install(
+            target = tgtFile,
+            expectedSize = resourceSize,
+            source = { context.resources.openRawResource(BASE_MODEL_RESOURCE) },
+            isValid = { isValidBaseModel(it, resourceSize) },
+        )
     }
 
     fun shouldFileBeIncludedInExport(file: File): Boolean {
@@ -258,7 +280,9 @@ object ModelPaths {
     fun getModels(context: Context): List<ModelInfoLoader> {
         ensureDefaultModelExists(context)
 
-        return getModelDirectory(context).listFiles()?.map {
+        return getModelDirectory(context).listFiles()
+            ?.filter { it.isFile && it.extension == "gguf" }
+            ?.map {
             ModelInfoLoader(
                 path = it,
                 name = it.nameWithoutExtension
