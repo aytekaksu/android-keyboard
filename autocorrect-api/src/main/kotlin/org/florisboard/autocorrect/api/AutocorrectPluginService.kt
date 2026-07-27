@@ -137,6 +137,9 @@ abstract class AutocorrectPluginService : Service() {
     /** Releases resources tied to the host which just unbound. */
     protected open fun onHostUnbound() = Unit
 
+    /** Awaited after binding callbacks stop; defaults to the original [onHostUnbound] hook. */
+    protected open suspend fun onHostUnboundCleanup() = onHostUnbound()
+
     protected open suspend fun onStartSession(session: AutocorrectSession) = Unit
 
     protected open suspend fun onSuggest(request: AutocorrectRequest): List<AutocorrectCandidate> =
@@ -240,7 +243,7 @@ abstract class AutocorrectPluginService : Service() {
             bindingJob.join()
             uiMutationGuard.withLock {
                 predictionGuard.withLock {
-                    runCatching { onHostUnbound() }.onFailure { error ->
+                    runCatching { onHostUnboundCleanup() }.onFailure { error ->
                         Log.e(AUTOCORRECT_PLUGIN_TAG, "Provider unbind cleanup failed", error)
                     }
                 }

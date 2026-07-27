@@ -311,6 +311,33 @@ public class DictionaryFacilitatorImpl implements DictionaryFacilitator {
     }
 
     @Override
+    public void clearSuggestionSessions() {
+        final List<DictionaryGroup> dictionaryGroups;
+        final EmailDictionary emailDictionary;
+        synchronized (mLock) {
+            dictionaryGroups = new ArrayList<>(mDictionaryGroups);
+            emailDictionary = mEmailDictionary;
+            mTrieCorrespondingGroups = null;
+            mPrevKeyboard = null;
+        }
+        for (final DictionaryGroup group : dictionaryGroups) {
+            for (final String dictType : ALL_DICTIONARY_TYPES) {
+                final Dictionary dictionary = group.getDict(dictType);
+                if (dictionary != null) {
+                    dictionary.clearSuggestionSessions();
+                }
+            }
+        }
+        if (emailDictionary != null) {
+            emailDictionary.clearSuggestionSessions();
+        }
+        final SwipeDecoderDictionary swipeDecoder = swipeDecoderDictionary;
+        if (swipeDecoder != null) {
+            swipeDecoder.clearSuggestionSessions();
+        }
+    }
+
+    @Override
     public void onEmailTyped(String email) {
         SettingsValues settings = Settings.getInstance().getCurrent();
         if(!settings.isPersonalizationEnabled() || settings.mInputAttributes.mNoLearning) return;
@@ -1118,7 +1145,7 @@ public class DictionaryFacilitatorImpl implements DictionaryFacilitator {
     }
 
     private boolean mPrevBadWordsAllowed = false;
-    private Keyboard mPrevKeyboard = null;
+    private volatile Keyboard mPrevKeyboard = null;
     private ArrayList<DictionaryGroup> mTrieCorrespondingGroups;
 
     private float[] getTrieWeights() {
