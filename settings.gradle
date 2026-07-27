@@ -16,4 +16,4 @@ dependencyResolutionManagement {
         }
     }
 }
-include ':voiceinput-shared'
+include ':autocorrect-api', ':voiceinput-shared'
