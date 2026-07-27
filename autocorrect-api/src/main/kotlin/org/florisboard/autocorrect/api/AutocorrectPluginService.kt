@@ -57,6 +57,7 @@ abstract class AutocorrectPluginService : Service() {
     private var suggestionJob: Job? = null
     private var activeSessionId: Long? = null
     @Volatile private var uiClient: Messenger? = null
+    private val predictionGuard = Mutex()
     private val uiMutationGuard = Mutex()
     private val messenger = Messenger(IncomingHandler())
 
@@ -147,29 +148,25 @@ abstract class AutocorrectPluginService : Service() {
             when (message.what) {
                 AutocorrectPluginContract.MSG_START_SESSION -> {
                     val session = AutocorrectSession.fromBundle(message.data)
-                    val previousSuggestionJob = suggestionJob
-                    previousSuggestionJob?.cancel()
+                    suggestionJob?.cancel()
                     val previousSessionJob = sessionJob
                     activeSessionId = session.sessionId
                     sessionJob = serviceScope.launch {
-                        previousSuggestionJob?.join()
                         previousSessionJob?.join()
-                        onStartSession(session)
+                        predictionGuard.withLock { onStartSession(session) }
                     }
                 }
                 AutocorrectPluginContract.MSG_SUGGEST -> {
                     val request = AutocorrectRequest.fromBundle(message.data)
                     if (request.sessionId != activeSessionId) return
                     val replyTo = message.replyTo
-                    val previousSuggestionJob = suggestionJob
-                    previousSuggestionJob?.cancel()
+                    suggestionJob?.cancel()
                     val sessionReady = sessionJob
                     suggestionJob = serviceScope.launch {
-                        previousSuggestionJob?.join()
                         sessionReady?.join()
                         if (request.sessionId != activeSessionId) return@launch
                         val result = try {
-                            onSuggestResult(request)
+                            predictionGuard.withLock { onSuggestResult(request) }
                         } catch (error: CancellationException) {
                             throw error
                         } catch (error: Exception) {
@@ -235,14 +232,12 @@ abstract class AutocorrectPluginService : Service() {
                 AutocorrectPluginContract.MSG_FINISH_SESSION -> {
                     val sessionId = message.data.getLong(Keys.SESSION_ID)
                     if (sessionId != activeSessionId) return
-                    val previousSuggestionJob = suggestionJob
-                    previousSuggestionJob?.cancel()
+                    suggestionJob?.cancel()
                     val previousSessionJob = sessionJob
                     activeSessionId = null
                     sessionJob = serviceScope.launch {
-                        previousSuggestionJob?.join()
                         previousSessionJob?.cancelAndJoin()
-                        onFinishSession(sessionId)
+                        predictionGuard.withLock { onFinishSession(sessionId) }
                     }
                 }
                 AutocorrectPluginContract.MSG_CANCEL -> {
