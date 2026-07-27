@@ -1076,13 +1076,34 @@ public class DictionaryFacilitatorImpl implements DictionaryFacilitator {
 
     @Override
     public boolean clearUserHistoryDictionary(final Context context) {
-        if(mEmailDictionary != null) {
-            mEmailDictionary.clear();
-            mEmailDictionary.loadInitialContentsLocked();
-            mEmailDictionary.asyncFlushBinaryDictionary();
+        if (mEmailDictionary != null) {
+            mEmailDictionary.clearAndFlushDictionaryAsync();
         }
 
         return clearSubDictionary(Dictionary.TYPE_USER_HISTORY);
+    }
+
+    @Override
+    public boolean clearUserHistoryDictionaryAndWait(final Context context) {
+        final EmailDictionary loadedEmailDictionary = mEmailDictionary;
+        final boolean closeEmailDictionary = loadedEmailDictionary == null;
+        final EmailDictionary emailDictionary =
+                closeEmailDictionary ? new EmailDictionary(context) : loadedEmailDictionary;
+        clearSubDictionary(Dictionary.TYPE_USER_HISTORY);
+        final boolean emailCleared;
+        try {
+            emailCleared = emailDictionary.clearAndFlushDictionary();
+        } finally {
+            if (closeEmailDictionary) {
+                try {
+                    emailDictionary.close();
+                } catch (final RuntimeException e) {
+                    Log.w(TAG, "Failed to close temporary email dictionary", e);
+                }
+            }
+        }
+
+        return emailCleared;
     }
 
     @Override

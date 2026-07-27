@@ -183,6 +183,8 @@ public interface DictionaryFacilitator {
 
     boolean clearUserHistoryDictionary(final Context context);
 
+    boolean clearUserHistoryDictionaryAndWait(final Context context);
+
     void flushUserHistoryDictionaries();
 
     void updateSwipeLayoutAndDictsIfNeeded(SettingsValues values, Keyboard keyboard);

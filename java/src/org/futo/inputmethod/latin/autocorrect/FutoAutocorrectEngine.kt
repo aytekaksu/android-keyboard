@@ -558,9 +558,10 @@ internal class FutoAutocorrectEngine(
         cancelHistoryFlush()
         val cleared = withContext(Dispatchers.IO) {
             PersonalizationHelper.removeAllUserHistoryDictionaries(context)
-            context.filesDir.listFiles().orEmpty().none {
+            val emailCleared = dictionary.clearUserHistoryDictionaryAndWait(context)
+            emailCleared && (context.filesDir.listFiles()?.none {
                 it.name.startsWith(UserHistoryDictionary::class.java.simpleName)
-            }
+            } == true)
         }
         stateGuard.withLock { session }?.let {
             startSessionLocked(it, forceReloadDictionaries = true)

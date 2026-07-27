@@ -15,7 +15,10 @@ class EmailDictionary(context: Context) :
     )
     override fun loadInitialContentsLocked() {
         emailDomains.reversed().forEachIndexed { i, it ->
-            addEntry(NgramContext.EMAIL_DOMAIN, i, it, 1)
+            addNgramEntryLocked(NgramContext.EMAIL_DOMAIN, it, i, 1)
+            binaryDictionary?.updateEntriesForWordWithNgramContext(
+                NgramContext.EMAIL_DOMAIN, it, true, i, 1,
+            )
         }
     }
 
