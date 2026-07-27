@@ -502,17 +502,35 @@ internal class FutoAutocorrectEngine(
         }
     }
 
-    suspend fun finishSession(sessionId: Long) = operationGuard.withLock finish@ {
+    suspend fun finishSession(
+        sessionId: Long,
+        finalRequest: AutocorrectRequest?,
+    ) = operationGuard.withLock finish@ {
+        var committedEmail: String? = null
         val finished = stateGuard.withLock {
             if (session?.sessionId != sessionId) {
                 false
             } else {
+                if (
+                    isLearningAllowed() &&
+                    settings.current.mInputAttributes.mIsEmailField
+                ) {
+                    committedEmail = committedEmailForFinish(
+                        sessionId,
+                        finalRequest,
+                        lastRequest,
+                    )
+                }
                 clearSessionStateLocked()
                 true
             }
         }
         if (!finished) return@finish
-        finishSessionLifecycle(hadSession = true)
+        try {
+            committedEmail?.let(dictionary::onEmailTyped)
+        } finally {
+            finishSessionLifecycle(hadSession = true)
+        }
     }
 
     suspend fun unbindHost() = operationGuard.withLock {
@@ -974,6 +992,7 @@ internal class FutoAutocorrectEngine(
     private fun learn(word: String, ngramContext: NgramContext, blockOffensive: Boolean) {
         if (word.isBlank()) return
         dictionary.onWordCommitted(word)
+        if (settings.current.mInputAttributes.mIsEmailField) return
         dictionary.addToUserHistory(
             word,
             false,
@@ -1015,6 +1034,42 @@ internal class FutoAutocorrectEngine(
         private const val TAG = "FutoAutocorrectEngine"
         private const val PROVIDER_FLAVOR = "provider"
         private const val HISTORY_FLUSH_DELAY_MS = 5_000L
+    }
+}
+
+internal fun committedEmailForFinish(
+    sessionId: Long,
+    finalRequest: AutocorrectRequest?,
+    lastRequest: AutocorrectRequest?,
+): String? {
+    fun AutocorrectRequest.isValid() =
+        this.sessionId == sessionId &&
+            selectionStart == selectionEnd &&
+            selectionStart in 0..text.length
+    val request = if (finalRequest != null) {
+        finalRequest.takeIf { it.isValid() }
+    } else {
+        lastRequest?.takeIf { it.isValid() }
+    }
+    return request?.let { committedEmailBeforeCursor(it.text, it.selectionStart) }
+}
+
+internal fun committedEmailBeforeCursor(text: String, selectionStart: Int): String? {
+    if (selectionStart !in 0..text.length) return null
+    val email = text
+        .substring(0, selectionStart)
+        .takeLast(BinaryDictionary.DICTIONARY_MAX_WORD_LENGTH)
+    if (
+        email.length >= BinaryDictionary.DICTIONARY_MAX_WORD_LENGTH ||
+        ' ' in email
+    ) {
+        return null
+    }
+    val at = email.indexOf('@')
+    if (at <= 0 || at != email.lastIndexOf('@') || at == email.lastIndex) return null
+    val domain = email.substring(at + 1)
+    return email.takeIf {
+        '.' in domain && !domain.startsWith('.') && !domain.endsWith('.')
     }
 }
 

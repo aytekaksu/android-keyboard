@@ -211,8 +211,11 @@ class FlorisAutocorrectService : AutocorrectPluginService() {
         engine.textEvent(event)
     }
 
-    override suspend fun onFinishSession(sessionId: Long) {
-        engine.finishSession(sessionId)
+    override suspend fun onFinishSession(
+        sessionId: Long,
+        finalRequest: AutocorrectRequest?,
+    ) {
+        engine.finishSession(sessionId, finalRequest)
     }
 
     override suspend fun onGetPluginUi(languageTags: List<String>): AutocorrectPluginUi {
