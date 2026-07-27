@@ -147,10 +147,12 @@ abstract class AutocorrectPluginService : Service() {
             when (message.what) {
                 AutocorrectPluginContract.MSG_START_SESSION -> {
                     val session = AutocorrectSession.fromBundle(message.data)
-                    suggestionJob?.cancel()
+                    val previousSuggestionJob = suggestionJob
+                    previousSuggestionJob?.cancel()
                     val previousSessionJob = sessionJob
                     activeSessionId = session.sessionId
                     sessionJob = serviceScope.launch {
+                        previousSuggestionJob?.join()
                         previousSessionJob?.join()
                         onStartSession(session)
                     }
@@ -159,9 +161,13 @@ abstract class AutocorrectPluginService : Service() {
                     val request = AutocorrectRequest.fromBundle(message.data)
                     if (request.sessionId != activeSessionId) return
                     val replyTo = message.replyTo
-                    suggestionJob?.cancel()
+                    val previousSuggestionJob = suggestionJob
+                    previousSuggestionJob?.cancel()
+                    val sessionReady = sessionJob
                     suggestionJob = serviceScope.launch {
-                        sessionJob?.join()
+                        previousSuggestionJob?.join()
+                        sessionReady?.join()
+                        if (request.sessionId != activeSessionId) return@launch
                         val result = try {
                             onSuggestResult(request)
                         } catch (error: CancellationException) {
@@ -229,10 +235,12 @@ abstract class AutocorrectPluginService : Service() {
                 AutocorrectPluginContract.MSG_FINISH_SESSION -> {
                     val sessionId = message.data.getLong(Keys.SESSION_ID)
                     if (sessionId != activeSessionId) return
-                    suggestionJob?.cancel()
+                    val previousSuggestionJob = suggestionJob
+                    previousSuggestionJob?.cancel()
                     val previousSessionJob = sessionJob
                     activeSessionId = null
                     sessionJob = serviceScope.launch {
+                        previousSuggestionJob?.join()
                         previousSessionJob?.cancelAndJoin()
                         onFinishSession(sessionId)
                     }
