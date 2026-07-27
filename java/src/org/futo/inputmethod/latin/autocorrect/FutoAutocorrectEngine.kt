@@ -30,11 +30,16 @@ import org.florisboard.autocorrect.api.AutocorrectCandidate
 import org.florisboard.autocorrect.api.AutocorrectCandidateKind
 import org.florisboard.autocorrect.api.AutocorrectCapsMode
 import org.florisboard.autocorrect.api.AutocorrectInputMode
+import org.florisboard.autocorrect.api.AutocorrectPluginContract
 import org.florisboard.autocorrect.api.AutocorrectRequest
 import org.florisboard.autocorrect.api.AutocorrectSession
 import org.florisboard.autocorrect.api.AutocorrectSuggestionResult
 import org.florisboard.autocorrect.api.AutocorrectTextEvent
 import org.florisboard.autocorrect.api.AutocorrectTextEventKind
+import org.florisboard.autocorrect.api.AutocorrectUserDictionaryEntry
+import org.florisboard.autocorrect.api.AutocorrectUserDictionaryPage
+import org.florisboard.autocorrect.api.AutocorrectUserDictionaryReader
+import org.florisboard.autocorrect.api.AutocorrectUserDictionaryStatus
 import org.futo.inputmethod.event.Event
 import org.futo.inputmethod.keyboard.Keyboard
 import org.futo.inputmethod.latin.BinaryDictionary
@@ -49,6 +54,7 @@ import org.futo.inputmethod.latin.Suggest
 import org.futo.inputmethod.latin.SuggestedWords
 import org.futo.inputmethod.latin.SuggestedWords.SuggestedWordInfo
 import org.futo.inputmethod.latin.SuggestionBlacklist
+import org.futo.inputmethod.latin.UserBinaryDictionary
 import org.futo.inputmethod.latin.WordComposer
 import org.futo.inputmethod.latin.common.Constants
 import org.futo.inputmethod.latin.common.InputPointers
@@ -73,7 +79,6 @@ import org.futo.inputmethod.latin.xlm.BinaryDictTransformerWeightSetting
 import org.futo.inputmethod.latin.xlm.ModelInfoLoader
 import org.futo.inputmethod.latin.xlm.ModelLoadingException
 import org.futo.inputmethod.latin.xlm.ModelPaths
-import org.futo.inputmethod.latin.xlm.UserDictionaryObserver
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.TimeUnit
@@ -82,6 +87,7 @@ import kotlin.math.ceil
 internal class FutoAutocorrectEngine(
     private val context: Context,
     private val scope: CoroutineScope,
+    private val hostUserDictionary: AutocorrectUserDictionaryReader,
 ) {
     private data class CandidateRecord(
         val word: String,
@@ -109,7 +115,6 @@ internal class FutoAutocorrectEngine(
     private val suggest = Suggest(dictionary)
     private val suggestionBlacklist =
         SuggestionBlacklist(settings, context, scope).also { it.init() }
-    private val userDictionary = UserDictionaryObserver(context)
     private val operationGuard = Mutex()
     private val stateGuard = Mutex()
     private val candidates = LinkedHashMap<String, CandidateRecord>()
@@ -125,6 +130,8 @@ internal class FutoAutocorrectEngine(
     @Volatile private var preparedModels: Map<String, ModelInfoLoader>? = null
     private var transformerTimeouts = 0
     private var transformerDisabled = false
+    private var appliedUserDictionary = emptyList<AutocorrectUserDictionaryEntry>()
+    private var transformerUserDictionaryWords = emptyList<String>()
     private val modelUpdates = scope.launch(Dispatchers.Default) {
         ModelPaths.modelOptionsUpdated.collect {
             operationGuard.withLock {
@@ -136,13 +143,18 @@ internal class FutoAutocorrectEngine(
         }
     }
 
+    init {
+        UserBinaryDictionary.setExternalSource(emptyList())
+    }
+
     suspend fun startSession(newSession: AutocorrectSession) = operationGuard.withLock {
-        startSessionLocked(newSession)
+        startSessionLocked(newSession, refreshHostUserDictionary = true)
     }
 
     private suspend fun startSessionLocked(
         newSession: AutocorrectSession,
         forceReloadDictionaries: Boolean = false,
+        refreshHostUserDictionary: Boolean = false,
     ) {
         FutoTransformerModelCache.clearContext()
         stateGuard.withLock {
@@ -172,6 +184,9 @@ internal class FutoAutocorrectEngine(
             primaryLocale,
             InputAttributes(editorInfo, false, context.packageName, newSession.editorFlags),
         )
+        if (refreshHostUserDictionary) {
+            refreshUserDictionary(locales.ifEmpty { listOf(primaryLocale) })
+        }
         val activeModelLanguages = locales
             .ifEmpty { listOf(primaryLocale) }
             .mapTo(mutableSetOf()) { it.language }
@@ -300,7 +315,7 @@ internal class FutoAutocorrectEngine(
                                 prepared.ngramContext,
                                 prepared.keyboard.proximityInfo.nativeProximityInfo,
                                 context.getSetting(AutocorrectThresholdSetting),
-                                userDictionary.getWords(dictionary.locales).map { it.word },
+                                transformerUserDictionaryWords,
                                 context.getSetting(SUGGESTION_BLACKLIST).toTypedArray(),
                             )
                         }
@@ -347,6 +362,7 @@ internal class FutoAutocorrectEngine(
     suspend fun reloadSettings(
         modelsChanged: Boolean = false,
         resourcesChanged: Boolean = false,
+        userDictionaryChanged: Boolean = false,
     ) {
         operationGuard.withLock {
             if (resourcesChanged) flushHistory()
@@ -357,9 +373,12 @@ internal class FutoAutocorrectEngine(
                 preparedModels = null
             }
             evictDisabledTransformer()
-            userDictionary.updateWords()
             stateGuard.withLock { session }?.let {
-                startSessionLocked(it, forceReloadDictionaries = resourcesChanged)
+                startSessionLocked(
+                    it,
+                    forceReloadDictionaries = resourcesChanged,
+                    refreshHostUserDictionary = userDictionaryChanged,
+                )
             }
         }
     }
@@ -516,9 +535,6 @@ internal class FutoAutocorrectEngine(
 
     fun closeAsync() {
         if (!closeStarted.compareAndSet(false, true)) return
-        runCatching(userDictionary::unregister).onFailure {
-            Log.w(TAG, "Failed to unregister the user dictionary observer", it)
-        }
         modelUpdates.cancel()
         modelPreparation?.cancel()
         cleanupScope.launch {
@@ -540,6 +556,44 @@ internal class FutoAutocorrectEngine(
                 cleanupScope.cancel()
             }
         }
+    }
+
+    private suspend fun refreshUserDictionary(locales: List<Locale>) {
+        val result = hostUserDictionary.queryAllUserDictionary(
+            locales.map(Locale::toLanguageTag),
+        )
+        val entries = when (result.status) {
+            AutocorrectUserDictionaryStatus.OK -> result.entries.sortedBy { it.id }
+            AutocorrectUserDictionaryStatus.DENIED -> emptyList()
+            AutocorrectUserDictionaryStatus.UNAVAILABLE,
+            AutocorrectUserDictionaryStatus.INVALID -> return
+        }
+        if (entries == appliedUserDictionary) return
+        appliedUserDictionary = entries
+        val transformerEntries = entries
+            .asSequence()
+            .filter { it.word.length < 64 }
+            .sortedByDescending { it.frequency }
+            .distinctBy { it.word }
+            .toList()
+        transformerUserDictionaryWords = buildList {
+            var approximateTokens = 0
+            for (entry in transformerEntries) {
+                approximateTokens += (4 + entry.word.length) / 4
+                if (approximateTokens > 200) break
+                add(entry.word)
+            }
+        }
+        UserBinaryDictionary.setExternalSource(
+            entries.map {
+                UserBinaryDictionary.ExternalEntry(
+                    it.word,
+                    it.frequency,
+                    it.languageTag,
+                    it.shortcut,
+                )
+            },
+        )
     }
 
     private suspend fun prepareInput(
@@ -925,6 +979,44 @@ internal class FutoAutocorrectEngine(
         private const val TAG = "FutoAutocorrectEngine"
         private const val PROVIDER_FLAVOR = "provider"
         private const val HISTORY_FLUSH_DELAY_MS = 5_000L
+    }
+}
+
+internal suspend fun AutocorrectUserDictionaryReader.queryAllUserDictionary(
+    languageTags: List<String>,
+): AutocorrectUserDictionaryPage {
+    val entries = mutableListOf<AutocorrectUserDictionaryEntry>()
+    var afterId = 0L
+    while (true) {
+        val page = try {
+            queryUserDictionary(
+                languageTags = languageTags,
+                afterId = afterId,
+                limit = AutocorrectPluginContract.MAX_USER_DICTIONARY_PAGE_SIZE,
+            )
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            return AutocorrectUserDictionaryPage(AutocorrectUserDictionaryStatus.UNAVAILABLE)
+        }
+        if (!page.successful) {
+            return AutocorrectUserDictionaryPage(page.status)
+        }
+        if (
+            page.entries.any { it.id <= afterId } ||
+            page.entries.zipWithNext().any { (first, second) -> second.id <= first.id }
+        ) {
+            return AutocorrectUserDictionaryPage(AutocorrectUserDictionaryStatus.INVALID)
+        }
+        entries += page.entries
+        val nextAfterId = page.nextAfterId
+            ?: return AutocorrectUserDictionaryPage(
+                status = AutocorrectUserDictionaryStatus.OK,
+                entries = entries,
+            )
+        if (nextAfterId <= afterId) {
+            return AutocorrectUserDictionaryPage(AutocorrectUserDictionaryStatus.INVALID)
+        }
+        afterId = nextAfterId
     }
 }
 

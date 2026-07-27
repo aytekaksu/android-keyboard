@@ -27,17 +27,22 @@ import android.os.Process
 import android.os.RemoteException
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 private const val AUTOCORRECT_PLUGIN_TAG = "AutocorrectPlugin"
 
@@ -49,38 +54,88 @@ private const val AUTOCORRECT_PLUGIN_TAG = "AutocorrectPlugin"
  * wake lock, or schedule recurring work for an active typing session.
  */
 abstract class AutocorrectPluginService : Service() {
-    private val serviceScope = CoroutineScope(
-        SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, error ->
-            Log.e(AUTOCORRECT_PLUGIN_TAG, "Provider operation failed", error)
-        },
+    private val operationErrorHandler = CoroutineExceptionHandler { _, error ->
+        Log.e(AUTOCORRECT_PLUGIN_TAG, "Provider operation failed", error)
+    }
+    private val lifecycleScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + operationErrorHandler,
     )
+    private var serviceScope = newServiceScope()
+    @Volatile private var bindingCleanup: Job? = null
+    @Volatile private var bindingReady: Job? = null
+    @Volatile private var activeBindingEpoch = 0L
+    private var nextBindingEpoch = 0L
     private var sessionJob: Job? = null
     private var suggestionJob: Job? = null
-    private var activeSessionId: Long? = null
+    @Volatile private var activeSessionId: Long? = null
     private var uiLanguageTags = emptyList<String>()
     @Volatile private var uiClient: Messenger? = null
     private val predictionGuard = Mutex()
     private val uiMutationGuard = Mutex()
-    private val messenger = Messenger(IncomingHandler())
+    private val callbackBindingEpoch = ThreadLocal<Long>()
+    private val userDictionaryClient = HostUserDictionaryClient(callbackBindingEpoch)
+
+    /**
+     * Reads Android personal-dictionary rows during a provider callback or its structured child
+     * coroutine. Calls outside the current binding's callback context return `UNAVAILABLE`.
+     */
+    protected val hostUserDictionary: AutocorrectUserDictionaryReader
+        get() = userDictionaryClient
 
     final override fun onBind(intent: Intent?): IBinder? {
-        return messenger.binder.takeIf {
-            intent?.action == AutocorrectPluginContract.ACTION_BIND_PROVIDER
+        if (intent?.action != AutocorrectPluginContract.ACTION_BIND_PROVIDER) return null
+        if (!serviceScope.coroutineContext[Job]!!.isActive) {
+            serviceScope = newServiceScope()
         }
+        val epoch = ++nextBindingEpoch
+        activeBindingEpoch = epoch
+        val messenger = Messenger(IncomingHandler(epoch))
+        userDictionaryClient.beginBinding(epoch, messenger)
+        val previousCleanup = bindingCleanup
+        bindingReady = lifecycleScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            previousCleanup?.join()
+            if (activeBindingEpoch == epoch) {
+                userDictionaryClient.activate(epoch)
+            }
+        }
+        return messenger.binder
+    }
+
+    final override fun onUnbind(intent: Intent?): Boolean {
+        val (epoch, oldBinding) = clearBinding()
+        if (epoch != 0L) {
+            scheduleBindingCleanup(oldBinding)
+        }
+        return super.onUnbind(intent)
     }
 
     final override fun onDestroy() {
-        uiClient = null
-        serviceScope.cancel()
-        try {
-            onServiceDestroyed()
-        } finally {
-            super.onDestroy()
+        val (epoch, oldBinding) = clearBinding()
+        if (epoch != 0L) {
+            scheduleBindingCleanup(oldBinding)
         }
+        val cleanup = bindingCleanup
+        lifecycleScope.launch {
+            cleanup?.join()
+            oldBinding.join()
+            uiMutationGuard.withLock {
+                predictionGuard.withLock {
+                    runCatching { onServiceDestroyed() }.onFailure { error ->
+                        Log.e(AUTOCORRECT_PLUGIN_TAG, "Provider destruction cleanup failed", error)
+                    }
+                }
+            }
+        }.invokeOnCompletion {
+            lifecycleScope.cancel()
+        }
+        super.onDestroy()
     }
 
     /** Releases provider-owned resources after outstanding provider operations are cancelled. */
     protected open fun onServiceDestroyed() = Unit
+
+    /** Releases resources tied to the host which just unbound. */
+    protected open fun onHostUnbound() = Unit
 
     protected open suspend fun onStartSession(session: AutocorrectSession) = Unit
 
@@ -124,6 +179,15 @@ abstract class AutocorrectPluginService : Service() {
     /** Runs one explicit user action from a host-rendered provider page. */
     protected open suspend fun onInvokePluginUiAction(itemId: String): Boolean = false
 
+    /**
+     * Runs an explicit action with a dictionary editor valid only for that visible host action.
+     * Existing providers can keep overriding the single-argument overload.
+     */
+    protected open suspend fun onInvokePluginUiAction(
+        itemId: String,
+        userDictionary: AutocorrectUserDictionaryEditor,
+    ): Boolean = onInvokePluginUiAction(itemId)
+
     /** Reads or writes a document selected through the host's system document picker. */
     protected open suspend fun onPluginUiDocument(document: AutocorrectPluginDocument): Boolean = false
 
@@ -147,9 +211,52 @@ abstract class AutocorrectPluginService : Service() {
         )
     }
 
-    private inner class IncomingHandler : Handler(Looper.getMainLooper()) {
+    private fun newServiceScope() = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + operationErrorHandler,
+    )
+
+    private fun clearBinding(): Pair<Long, Job> {
+        val epoch = activeBindingEpoch
+        activeBindingEpoch = 0L
+        bindingReady?.cancel()
+        bindingReady = null
+        suggestionJob?.cancel()
+        suggestionJob = null
+        sessionJob?.cancel()
+        sessionJob = null
+        activeSessionId = null
+        uiClient = null
+        uiLanguageTags = emptyList()
+        userDictionaryClient.detach()
+        val bindingJob = serviceScope.coroutineContext[Job]!!
+        serviceScope.cancel()
+        return epoch to bindingJob
+    }
+
+    private fun scheduleBindingCleanup(bindingJob: Job) {
+        val previousCleanup = bindingCleanup
+        bindingCleanup = lifecycleScope.launch {
+            previousCleanup?.join()
+            bindingJob.join()
+            uiMutationGuard.withLock {
+                predictionGuard.withLock {
+                    runCatching { onHostUnbound() }.onFailure { error ->
+                        Log.e(AUTOCORRECT_PLUGIN_TAG, "Provider unbind cleanup failed", error)
+                    }
+                }
+            }
+        }
+    }
+
+    private inner class IncomingHandler(
+        private val bindingEpoch: Long,
+    ) : Handler(Looper.getMainLooper()) {
         override fun handleMessage(message: Message) {
-            if (!isAuthorized(message)) {
+            if (
+                bindingEpoch != activeBindingEpoch ||
+                !isAuthorized(message) ||
+                !userDictionaryClient.claimHost(message.sendingUid, message.replyTo)
+            ) {
                 if (message.what == AutocorrectPluginContract.MSG_PLUGIN_UI_DOCUMENT) {
                     runCatching { message.data.pluginUiDocument()?.close() }
                 }
@@ -170,7 +277,11 @@ abstract class AutocorrectPluginService : Service() {
                     val replyTo = message.replyTo
                     suggestionJob?.cancel()
                     val sessionReady = sessionJob
-                    suggestionJob = serviceScope.launch {
+                    val ready = bindingReady
+                    suggestionJob = serviceScope.launch(
+                        callbackBindingEpoch.asContextElement(bindingEpoch),
+                    ) {
+                        ready?.join()
                         sessionReady?.join()
                         if (request.sessionId != activeSessionId) return@launch
                         val result = try {
@@ -263,8 +374,14 @@ abstract class AutocorrectPluginService : Service() {
                 }
                 AutocorrectPluginContract.MSG_INVOKE_PLUGIN_UI_ACTION -> {
                     val itemId = message.data.pluginUiItemId()
+                    val requestId = message.data.pluginUiRequestId()
                     replyWithPluginUi(message) {
-                        onInvokePluginUiAction(itemId)
+                        val editor = userDictionaryClient.editor(requestId)
+                        try {
+                            onInvokePluginUiAction(itemId, editor)
+                        } finally {
+                            editor.close()
+                        }
                     }
                 }
                 AutocorrectPluginContract.MSG_PLUGIN_UI_DOCUMENT -> {
@@ -281,13 +398,20 @@ abstract class AutocorrectPluginService : Service() {
                         onPluginUiClosed()
                     }
                 }
+                AutocorrectPluginContract.MSG_HOST_USER_DICTIONARY_RESULT -> {
+                    userDictionaryClient.complete(message.sendingUid, message.data)
+                }
                 else -> super.handleMessage(message)
             }
         }
 
         private fun enqueueSessionOperation(operation: suspend () -> Unit) {
             val previous = sessionJob
-            sessionJob = serviceScope.launch {
+            val ready = bindingReady
+            sessionJob = serviceScope.launch(
+                callbackBindingEpoch.asContextElement(bindingEpoch),
+            ) {
+                ready?.join()
                 previous?.join()
                 predictionGuard.withLock { operation() }
             }
@@ -297,8 +421,13 @@ abstract class AutocorrectPluginService : Service() {
             cleanup: () -> Unit = {},
             operation: suspend () -> Unit,
         ) {
-            serviceScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val ready = bindingReady
+            serviceScope.launch(
+                context = callbackBindingEpoch.asContextElement(bindingEpoch),
+                start = CoroutineStart.UNDISPATCHED,
+            ) {
                 try {
+                    ready?.join()
                     uiMutationGuard.withLock {
                         yield()
                         predictionGuard.withLock {
@@ -354,6 +483,226 @@ abstract class AutocorrectPluginService : Service() {
             }
         }
     }
+}
+
+private class HostUserDictionaryClient(
+    private val callbackBindingEpoch: ThreadLocal<Long>,
+) : AutocorrectUserDictionaryReader {
+    companion object {
+        private const val RESPONSE_TIMEOUT_MS = 2_000L
+    }
+
+    private val nextRequestId = AtomicLong(1L)
+    private val guard = Any()
+    private val pending = mutableMapOf<Long, CompletableDeferred<AutocorrectUserDictionaryPage>>()
+    private var replyMessenger: Messenger? = null
+    private var bindingEpoch = 0L
+    private var activeBindingEpoch = 0L
+    private var hostUid: Int? = null
+    private var host: Messenger? = null
+
+    fun beginBinding(epoch: Long, messenger: Messenger) {
+        synchronized(guard) {
+            bindingEpoch = epoch
+            activeBindingEpoch = 0L
+            replyMessenger = messenger
+        }
+    }
+
+    fun activate(epoch: Long) {
+        synchronized(guard) {
+            if (bindingEpoch == epoch && replyMessenger != null) {
+                activeBindingEpoch = epoch
+            }
+        }
+    }
+
+    fun claimHost(uid: Int, messenger: Messenger?): Boolean = synchronized(guard) {
+        val currentUid = hostUid
+        if (currentUid == null) {
+            messenger ?: return@synchronized false
+            hostUid = uid
+            host = messenger
+            true
+        } else {
+            currentUid == uid && (
+                messenger == null ||
+                    messenger.binder == host?.binder
+            )
+        }
+    }
+
+    fun detach() {
+        val interrupted = synchronized(guard) {
+            hostUid = null
+            host = null
+            replyMessenger = null
+            bindingEpoch = 0L
+            activeBindingEpoch = 0L
+            pending.values.toList().also { pending.clear() }
+        }
+        interrupted.forEach {
+            it.complete(
+                AutocorrectUserDictionaryPage(AutocorrectUserDictionaryStatus.UNAVAILABLE),
+            )
+        }
+    }
+
+    fun editor(originUiRequestId: Long) = ScopedEditor(originUiRequestId)
+
+    inner class ScopedEditor(
+        private val originUiRequestId: Long,
+    ) : AutocorrectUserDictionaryEditor {
+        private val open = AtomicBoolean(true)
+
+        fun close() {
+            open.set(false)
+        }
+
+        override suspend fun queryUserDictionary(
+            languageTags: List<String>,
+            afterId: Long,
+            limit: Int,
+        ) = if (open.get()) {
+            this@HostUserDictionaryClient.queryUserDictionary(languageTags, afterId, limit)
+        } else {
+            deniedPage()
+        }
+
+        override suspend fun upsertUserDictionaryEntry(
+            entry: AutocorrectUserDictionaryEntry,
+        ) = if (open.get()) {
+            request(
+                userDictionaryUpsertBundle(
+                    requestId = nextRequestId.getAndIncrement(),
+                    originUiRequestId = originUiRequestId,
+                    entry = entry,
+                ),
+            ).toMutationResult()
+        } else {
+            deniedPage().toMutationResult()
+        }
+
+        override suspend fun deleteUserDictionaryEntry(
+            id: Long,
+        ) = if (!open.get()) {
+            deniedPage().toMutationResult()
+        } else if (id <= 0L) {
+            AutocorrectUserDictionaryMutationResult(
+                AutocorrectUserDictionaryStatus.INVALID,
+            )
+        } else {
+            request(
+                userDictionaryDeleteBundle(
+                    requestId = nextRequestId.getAndIncrement(),
+                    originUiRequestId = originUiRequestId,
+                    id = id,
+                ),
+            ).toMutationResult()
+        }
+    }
+
+    override suspend fun queryUserDictionary(
+        languageTags: List<String>,
+        afterId: Long,
+        limit: Int,
+    ) = request(
+        userDictionaryQueryBundle(
+            requestId = nextRequestId.getAndIncrement(),
+            languageTags = languageTags,
+            afterId = afterId,
+            limit = limit,
+        ),
+    )
+
+    fun complete(uid: Int, bundle: android.os.Bundle) {
+        val (requestId, result) = runCatching {
+            userDictionaryResultFromBundle(bundle)
+        }.getOrNull() ?: return
+        val deferred = synchronized(guard) {
+            if (hostUid == uid) pending.remove(requestId) else null
+        }
+        deferred?.complete(result)
+    }
+
+    private suspend fun request(data: android.os.Bundle): AutocorrectUserDictionaryPage {
+        val request = runCatching { userDictionaryRequestFromBundle(data) }.getOrNull()
+            ?: return AutocorrectUserDictionaryPage(AutocorrectUserDictionaryStatus.INVALID)
+        val requestId = request.requestId
+        val deferred = CompletableDeferred<AutocorrectUserDictionaryPage>()
+        val callerEpoch = callbackBindingEpoch.get()
+        val sent = synchronized(guard) {
+            if (callerEpoch == null || callerEpoch != activeBindingEpoch) {
+                return@synchronized false
+            }
+            val current = host ?: return@synchronized false
+            val replies = replyMessenger ?: return@synchronized false
+            pending[requestId] = deferred
+            try {
+                current.send(
+                    Message.obtain(
+                        null,
+                        AutocorrectPluginContract.MSG_HOST_USER_DICTIONARY_REQUEST,
+                    ).apply {
+                        this.data = data
+                        replyTo = replies
+                    },
+                )
+                true
+            } catch (_: RemoteException) {
+                pending.remove(requestId, deferred)
+                false
+            }
+        }
+        if (!sent) {
+            return AutocorrectUserDictionaryPage(AutocorrectUserDictionaryStatus.UNAVAILABLE)
+        }
+        val result = try {
+            withTimeoutOrNull(RESPONSE_TIMEOUT_MS) { deferred.await() }
+                ?: AutocorrectUserDictionaryPage(AutocorrectUserDictionaryStatus.UNAVAILABLE)
+        } finally {
+            synchronized(guard) { pending.remove(requestId, deferred) }
+        }
+        return result.validatedFor(request)
+    }
+
+    private fun deniedPage() =
+        AutocorrectUserDictionaryPage(AutocorrectUserDictionaryStatus.DENIED)
+
+    private fun AutocorrectUserDictionaryPage.validatedFor(
+        request: AutocorrectUserDictionaryRequest,
+    ): AutocorrectUserDictionaryPage {
+        if (!successful) return AutocorrectUserDictionaryPage(status)
+        return when (request.operation) {
+            AutocorrectUserDictionaryOperation.QUERY -> {
+                val ordered = entries.size <= request.limit &&
+                    entries.all { it.id > request.afterId } &&
+                    entries.zipWithNext().all { (first, second) -> first.id < second.id }
+                val cursorValid = nextAfterId == null || (
+                    nextAfterId > request.afterId &&
+                        nextAfterId >= (entries.lastOrNull()?.id ?: 0L)
+                    )
+                takeIf { ordered && cursorValid }
+                    ?: AutocorrectUserDictionaryPage(AutocorrectUserDictionaryStatus.INVALID)
+            }
+            AutocorrectUserDictionaryOperation.UPSERT -> {
+                val entry = entries.singleOrNull()
+                takeIf {
+                    nextAfterId == null &&
+                        entry != null &&
+                        entry.id > 0L &&
+                        (request.entry?.id == 0L || request.entry?.id == entry.id)
+                } ?: AutocorrectUserDictionaryPage(AutocorrectUserDictionaryStatus.INVALID)
+            }
+            AutocorrectUserDictionaryOperation.DELETE -> {
+                takeIf { entries.isEmpty() && nextAfterId == null }
+                    ?: AutocorrectUserDictionaryPage(AutocorrectUserDictionaryStatus.INVALID)
+            }
+        }
+    }
+
+    private fun AutocorrectUserDictionaryPage.toMutationResult() =
+        AutocorrectUserDictionaryMutationResult(status, entries.firstOrNull())
 }
 
 private fun Messenger?.sendSafely(what: Int, data: android.os.Bundle) {

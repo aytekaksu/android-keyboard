@@ -7,7 +7,6 @@
 
 package org.futo.inputmethod.latin.autocorrect
 
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.Signature
 import android.os.Build
@@ -24,6 +23,7 @@ import org.florisboard.autocorrect.api.AutocorrectRequest
 import org.florisboard.autocorrect.api.AutocorrectSession
 import org.florisboard.autocorrect.api.AutocorrectSuggestionResult
 import org.florisboard.autocorrect.api.AutocorrectTextEvent
+import org.florisboard.autocorrect.api.AutocorrectUserDictionaryEditor
 import org.futo.inputmethod.latin.settings.Settings
 import org.futo.inputmethod.latin.uix.DataStoreHelper
 import org.futo.inputmethod.latin.uix.forceUnlockDatastore
@@ -41,8 +41,8 @@ class FlorisAutocorrectService : AutocorrectPluginService() {
         forceUnlockDatastore(providerContext)
         DataStoreHelper.init(providerContext)
         Settings.init(providerContext)
-        engine = FutoAutocorrectEngine(providerContext, engineScope)
-        hostedSettings = FutoHostedSettings(providerContext, engine)
+        engine = FutoAutocorrectEngine(providerContext, engineScope, hostUserDictionary)
+        hostedSettings = FutoHostedSettings(providerContext, engine, hostUserDictionary)
     }
 
     override fun onServiceDestroyed() {
@@ -51,9 +51,9 @@ class FlorisAutocorrectService : AutocorrectPluginService() {
         engineScope.cancel()
     }
 
-    override fun onUnbind(intent: Intent?): Boolean {
+    override fun onHostUnbound() {
         synchronized(authorizedHosts) { authorizedHosts.clear() }
-        return super.onUnbind(intent)
+        hostedSettings.onUiClosed()
     }
 
     override suspend fun onStartSession(session: AutocorrectSession) {
@@ -219,12 +219,19 @@ class FlorisAutocorrectService : AutocorrectPluginService() {
         return hostedSettings.setValue(itemId, value)
     }
 
-    override suspend fun onInvokePluginUiAction(itemId: String): Boolean {
-        return hostedSettings.invoke(itemId)
+    override suspend fun onInvokePluginUiAction(
+        itemId: String,
+        userDictionary: AutocorrectUserDictionaryEditor,
+    ): Boolean {
+        return hostedSettings.invoke(itemId, userDictionary)
     }
 
     override suspend fun onPluginUiDocument(document: AutocorrectPluginDocument): Boolean {
         return hostedSettings.document(document)
+    }
+
+    override suspend fun onPluginUiClosed() {
+        hostedSettings.onUiClosed()
     }
 
     private companion object {

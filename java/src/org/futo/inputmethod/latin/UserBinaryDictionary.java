@@ -16,7 +16,6 @@
 
 package org.futo.inputmethod.latin;
 
-import android.content.ContentResolver;
 import android.content.Context;
 import android.database.ContentObserver;
 import android.database.Cursor;
@@ -31,9 +30,14 @@ import org.futo.inputmethod.annotations.ExternallyReferenced;
 import org.futo.inputmethod.latin.utils.SubtypeLocaleUtils;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.WeakHashMap;
 
 import javax.annotation.Nullable;
 
@@ -43,6 +47,7 @@ import javax.annotation.Nullable;
  */
 public class UserBinaryDictionary extends ExpandableBinaryDictionary {
     private static final String TAG = ExpandableBinaryDictionary.class.getSimpleName();
+    private static final boolean USE_HOST_DICTIONARY = "provider".equals(BuildConfig.FLAVOR);
 
     // The user dictionary provider uses an empty string to mean "all languages".
     private static final String USER_DICTIONARY_ALL_LANGUAGES = "";
@@ -51,6 +56,49 @@ public class UserBinaryDictionary extends ExpandableBinaryDictionary {
     // Shortcut frequency is 0~15, with 15 = whitelist. We don't want user dictionary entries
     // to auto-correct, so we set this to the highest frequency that won't, i.e. 14.
     private static final int USER_DICT_SHORTCUT_FREQUENCY = 14;
+
+    public static final class ExternalEntry {
+        final String mWord;
+        final int mFrequency;
+        @Nullable final String mLanguageTag;
+        @Nullable final String mShortcut;
+
+        public ExternalEntry(final String word, final int frequency,
+                @Nullable final String languageTag, @Nullable final String shortcut) {
+            mWord = word;
+            mFrequency = frequency;
+            mLanguageTag = languageTag;
+            mShortcut = shortcut;
+        }
+    }
+
+    private static final Set<UserBinaryDictionary> sInstances =
+            Collections.newSetFromMap(new WeakHashMap<UserBinaryDictionary, Boolean>());
+    @Nullable private static List<ExternalEntry> sExternalSource;
+
+    /**
+     * Installs an in-memory source, including an empty source. Passing {@code null} restores the
+     * Android user-dictionary provider for callers which do not use a host broker.
+     */
+    public static void setExternalSource(@Nullable final List<ExternalEntry> entries) {
+        final List<UserBinaryDictionary> instances;
+        synchronized (UserBinaryDictionary.class) {
+            sExternalSource = entries == null
+                    ? null
+                    : Collections.unmodifiableList(new ArrayList<>(entries));
+            localesNotNeededToRecreate.clear();
+            instances = new ArrayList<>(sInstances);
+        }
+        final boolean installed = entries != null;
+        for (final UserBinaryDictionary instance : instances) {
+            instance.onExternalSourceChanged(installed);
+        }
+    }
+
+    @Nullable
+    private static synchronized List<ExternalEntry> getExternalSource() {
+        return sExternalSource;
+    }
 
     private static final String[] PROJECTION_QUERY_WITH_SHORTCUT = new String[] {
             Words.WORD,
@@ -62,9 +110,9 @@ public class UserBinaryDictionary extends ExpandableBinaryDictionary {
             Words.FREQUENCY,
     };
 
-    private static HashSet<Locale> localesNotNeededToRecreate = new HashSet<>();
+    private static final HashSet<Locale> localesNotNeededToRecreate = new HashSet<>();
 
-    private static boolean userDictionaryNeedsRecreation(Locale locale) {
+    private static synchronized boolean userDictionaryNeedsRecreation(Locale locale) {
         if(localesNotNeededToRecreate.contains(locale)) {
             return false;
         }
@@ -72,21 +120,24 @@ public class UserBinaryDictionary extends ExpandableBinaryDictionary {
         return true;
     }
 
-    public static void resetUserDictionariesRequiringRecreation() {
+    public static synchronized void resetUserDictionariesRequiringRecreation() {
         localesNotNeededToRecreate.clear();
     }
 
     private static final String NAME = "userunigram";
 
     private ContentObserver mObserver;
+    final private Locale mLocale;
     final private String mLocaleString;
     final private boolean mAlsoUseMoreRestrictiveLocales;
+    private boolean mClosed;
 
     protected UserBinaryDictionary(final Context context, final Locale locale,
                                    final boolean alsoUseMoreRestrictiveLocales,
                                    final File dictFile, final String name) {
         super(context, getDictName(name, locale, dictFile), locale, Dictionary.TYPE_USER, dictFile);
         if (null == locale) throw new NullPointerException(); // Catch the error earlier
+        mLocale = locale;
         final String localeStr = locale.toString();
         if (SubtypeLocaleUtils.NO_LANGUAGE.equals(localeStr)) {
             // If we don't have a locale, insert into the "all locales" user dictionary.
@@ -95,9 +146,22 @@ public class UserBinaryDictionary extends ExpandableBinaryDictionary {
             mLocaleString = localeStr;
         }
         mAlsoUseMoreRestrictiveLocales = alsoUseMoreRestrictiveLocales;
-        ContentResolver cres = context.getContentResolver();
-
         if(UserBinaryDictionary.userDictionaryNeedsRecreation(locale)) setNeedsToRecreate();
+        synchronized (UserBinaryDictionary.class) {
+            sInstances.add(this);
+        }
+        synchronized (this) {
+            if (!USE_HOST_DICTIONARY && getExternalSource() == null) {
+                registerContentObserver();
+            } else {
+                unregisterContentObserver();
+            }
+        }
+        reloadDictionaryIfRequired();
+    }
+
+    private synchronized void registerContentObserver() {
+        if (USE_HOST_DICTIONARY || mClosed || mObserver != null) return;
         mObserver = new ContentObserver(null) {
             @Override
             public void onChange(final boolean self) {
@@ -114,7 +178,23 @@ public class UserBinaryDictionary extends ExpandableBinaryDictionary {
                 setNeedsToRecreate();
             }
         };
-        cres.registerContentObserver(Words.CONTENT_URI, true, mObserver);
+        mContext.getContentResolver().registerContentObserver(Words.CONTENT_URI, true, mObserver);
+    }
+
+    private synchronized void unregisterContentObserver() {
+        if (mObserver == null) return;
+        mContext.getContentResolver().unregisterContentObserver(mObserver);
+        mObserver = null;
+    }
+
+    private synchronized void onExternalSourceChanged(final boolean installed) {
+        if (mClosed) return;
+        if (USE_HOST_DICTIONARY || installed) {
+            unregisterContentObserver();
+        } else {
+            registerContentObserver();
+        }
+        setNeedsToRecreate();
         reloadDictionaryIfRequired();
     }
 
@@ -130,15 +210,26 @@ public class UserBinaryDictionary extends ExpandableBinaryDictionary {
 
     @Override
     public synchronized void close() {
-        if (mObserver != null) {
-            mContext.getContentResolver().unregisterContentObserver(mObserver);
-            mObserver = null;
+        if (mClosed) return;
+        mClosed = true;
+        synchronized (UserBinaryDictionary.class) {
+            sInstances.remove(this);
         }
+        unregisterContentObserver();
         super.close();
     }
 
     @Override
     public void loadInitialContentsLocked() {
+        final List<ExternalEntry> externalSource = getExternalSource();
+        if (USE_HOST_DICTIONARY) {
+            addExternalWordsLocked(externalSource == null ? Collections.emptyList() : externalSource);
+            return;
+        }
+        if (externalSource != null) {
+            addExternalWordsLocked(externalSource);
+            return;
+        }
         // Split the locale. For example "en" => ["en"], "de_DE" => ["de", "DE"],
         // "en_US_foo_bar_qux" => ["en", "US", "foo_bar_qux"] because of the limit of 3.
         // This is correct for locale processing.
@@ -234,33 +325,72 @@ public class UserBinaryDictionary extends ExpandableBinaryDictionary {
                 / HISTORICAL_DEFAULT_USER_DICTIONARY_FREQUENCY;
     }
 
+    private void addExternalWordsLocked(final List<ExternalEntry> entries) {
+        for (final ExternalEntry entry : entries) {
+            if (matchesLocale(entry.mLanguageTag)) {
+                addWordLocked(
+                        entry.mWord,
+                        entry.mShortcut,
+                        Math.max(0, Math.min(255, entry.mFrequency)));
+            }
+        }
+    }
+
+    private boolean matchesLocale(@Nullable final String languageTag) {
+        if (TextUtils.isEmpty(languageTag)) return true;
+        if (TextUtils.isEmpty(mLocaleString)) return false;
+        final Locale entryLocale = Locale.forLanguageTag(languageTag);
+        if (TextUtils.isEmpty(entryLocale.getLanguage()) || TextUtils.isEmpty(mLocale.getLanguage())) {
+            return false;
+        }
+        return localeComponentsMatch(entryLocale, mLocale)
+                || (mAlsoUseMoreRestrictiveLocales && localeComponentsMatch(mLocale, entryLocale));
+    }
+
+    private static boolean localeComponentsMatch(final Locale specified, final Locale target) {
+        return specified.getLanguage().equalsIgnoreCase(target.getLanguage())
+                && componentMatches(specified.getScript(), target.getScript())
+                && componentMatches(specified.getCountry(), target.getCountry())
+                && componentMatches(specified.getVariant(), target.getVariant());
+    }
+
+    private static boolean componentMatches(final String specified, final String target) {
+        return TextUtils.isEmpty(specified) || specified.equalsIgnoreCase(target);
+    }
+
+    private void addWordLocked(final String word, @Nullable final String shortcut,
+            final int frequency) {
+        if (word == null) return;
+        final int adjustedFrequency = scaleFrequencyFromDefaultToLatinIme(frequency);
+        // Safeguard against adding really long words.
+        if (word.length() <= MAX_WORD_LENGTH) {
+            runGCIfRequiredLocked(true /* mindsBlockByGC */);
+            addUnigramLocked(word, adjustedFrequency, null /* shortcutTarget */,
+                    0 /* shortcutFreq */, false /* isNotAWord */,
+                    false /* isPossiblyOffensive */,
+                    BinaryDictionary.NOT_A_VALID_TIMESTAMP);
+            if (null != shortcut && shortcut.length() <= MAX_WORD_LENGTH) {
+                runGCIfRequiredLocked(true /* mindsBlockByGC */);
+                addUnigramLocked(shortcut, adjustedFrequency, word,
+                        USER_DICT_SHORTCUT_FREQUENCY, true /* isNotAWord */,
+                        false /* isPossiblyOffensive */,
+                        BinaryDictionary.NOT_A_VALID_TIMESTAMP);
+            }
+        }
+    }
+
     private void addWordsLocked(final Cursor cursor) {
-        final boolean hasShortcutColumn = Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN;
         if (cursor == null) return;
         if (cursor.moveToFirst()) {
             final int indexWord = cursor.getColumnIndex(Words.WORD);
-            final int indexShortcut = hasShortcutColumn ? cursor.getColumnIndex(Words.SHORTCUT) : 0;
+            final int indexShortcut = cursor.getColumnIndex(Words.SHORTCUT);
+            final boolean hasShortcutColumn = indexShortcut >= 0;
             final int indexFrequency = cursor.getColumnIndex(Words.FREQUENCY);
             while (!cursor.isAfterLast()) {
                 final String word = cursor.getString(indexWord);
                 final String shortcut = hasShortcutColumn ? cursor.getString(indexShortcut) : null;
                 final int frequency = cursor.getInt(indexFrequency);
-                final int adjustedFrequency = scaleFrequencyFromDefaultToLatinIme(frequency);
-                // Safeguard against adding really long words.
-                if (word.length() <= MAX_WORD_LENGTH) {
-                    runGCIfRequiredLocked(true /* mindsBlockByGC */);
-                    addUnigramLocked(word, adjustedFrequency, null /* shortcutTarget */,
-                            0 /* shortcutFreq */, false /* isNotAWord */,
-                            false /* isPossiblyOffensive */,
-                            BinaryDictionary.NOT_A_VALID_TIMESTAMP);
-                    if (null != shortcut && shortcut.length() <= MAX_WORD_LENGTH) {
-                        runGCIfRequiredLocked(true /* mindsBlockByGC */);
-                        addUnigramLocked(shortcut, adjustedFrequency, word,
-                                USER_DICT_SHORTCUT_FREQUENCY, true /* isNotAWord */,
-                                false /* isPossiblyOffensive */,
-                                BinaryDictionary.NOT_A_VALID_TIMESTAMP);
-                    }
-                }
+                addWordLocked(word, shortcut, frequency);
                 cursor.moveToNext();
             }
         }
