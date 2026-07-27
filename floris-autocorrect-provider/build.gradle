@@ -230,6 +230,13 @@ android {
     packagingOptions {
         jniLibs {
             useLegacyPackaging = true
+            excludes += ['**/libdatastore_shared_counter.so']
+        }
+        resources {
+            excludes += [
+                'DebugProbesKt.bin',
+                'kotlin-tooling-metadata.json',
+            ]
         }
     }
 

@@ -14,6 +14,8 @@ def valid_field(value: str) -> bool:
 
 
 def write_shortcuts(path: Path, shortcuts: OrderedDict[str, str]) -> None:
+    if not shortcuts:
+        return
     with path.open("w", encoding="utf-8", newline="\n") as output:
         for word, emoji in shortcuts.items():
             if valid_field(word) and valid_field(emoji):
