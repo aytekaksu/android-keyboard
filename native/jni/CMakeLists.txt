@@ -95,6 +95,12 @@ if(NOT EXT_BUILD)
     target_include_directories(jni_latinime PRIVATE ${LATIN_IME_JNI_INCLUDE})
     if(FUTO_PROVIDER_ONLY)
         target_compile_definitions(jni_latinime PRIVATE FUTO_PROVIDER_ONLY)
+        set(PROVIDER_VERSION_SCRIPT
+                ${CMAKE_CURRENT_SOURCE_DIR}/provider_exports.map)
+        target_link_options(jni_latinime PRIVATE
+                "LINKER:--version-script=${PROVIDER_VERSION_SCRIPT}")
+        set_property(TARGET jni_latinime APPEND PROPERTY
+                LINK_DEPENDS ${PROVIDER_VERSION_SCRIPT})
     endif()
 
     target_link_libraries(jni_latinime
