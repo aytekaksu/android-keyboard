@@ -8,7 +8,7 @@
 -keep class org.futo.inputmethod.keyboard.ProximityInfo { *; }
 -keep class org.futo.inputmethod.latin.AssetFileAddress { *; }
 -keep class org.futo.inputmethod.latin.BinaryDictionary { *; }
--keep class org.futo.inputmethod.latin.BinaryDictionaryUtils { *; }
+-keep class org.futo.inputmethod.latin.utils.BinaryDictionaryUtils { *; }
 -keep class org.futo.inputmethod.latin.DicTraverseSession { *; }
 -keep class org.futo.inputmethod.latin.Dictionary { *; }
 -keep class org.futo.inputmethod.latin.NgramContext { *; }
