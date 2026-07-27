@@ -27,6 +27,7 @@ import android.view.View;
 import android.view.inputmethod.EditorInfo;
 
 import org.futo.inputmethod.compat.AppWorkaroundsUtils;
+import org.futo.inputmethod.latin.BuildConfig;
 import org.futo.inputmethod.latin.InputAttributes;
 import org.futo.inputmethod.latin.R;
 import org.futo.inputmethod.latin.Subtypes;
@@ -170,11 +171,13 @@ public class SettingsValues {
         mIncludesOtherImesInLanguageSwitchList = Settings.ENABLE_SHOW_LANGUAGE_SWITCH_KEY_SETTINGS
                 ? prefs.getBoolean(Settings.PREF_INCLUDE_OTHER_IMES_IN_LANGUAGE_SWITCH_LIST, false)
                 : true /* forcibly */;
-        mActionKeyId = ActionRegistry.INSTANCE.actionStringIdToIdx(
-                prefs.getString(
-                        Settings.PREF_ACTION_KEY_ID,
-                        RegistryKt.getDefaultActionKey()
-                ));
+        mActionKeyId = BuildConfig.FLAVOR == "provider"
+                ? -1
+                : ActionRegistry.INSTANCE.actionStringIdToIdx(
+                        prefs.getString(
+                                Settings.PREF_ACTION_KEY_ID,
+                                RegistryKt.getDefaultActionKey()
+                        ));
         mShowsActionKey = mActionKeyId != -1;
         mIsNumberRowEnabledByUser = prefs.getBoolean(Settings.PREF_ENABLE_NUMBER_ROW, false);
         mIsNumberRowEnabled = mIsNumberRowEnabledByUser
@@ -271,7 +274,9 @@ public class SettingsValues {
                 prefs, DebugSettings.PREF_KEY_PREVIEW_DISMISS_END_Y_SCALE,
                 defaultKeyPreviewDismissEndScale);
 
-        mMultilingualLocales = Subtypes.INSTANCE.getMultilingualBucket(context, mLocale);
+        mMultilingualLocales = BuildConfig.FLAVOR == "provider"
+                ? ProviderSessionLanguages.secondary()
+                : Subtypes.INSTANCE.getMultilingualBucket(context, mLocale);
 
         mDisplayOrientation = res.getConfiguration().orientation;
         mAppWorkarounds = new AsyncResultHolder<>("AppWorkarounds");

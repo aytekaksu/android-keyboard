@@ -2,7 +2,6 @@ package org.futo.inputmethod.latin.xlm
 
 import android.content.Context
 import android.util.Log
-import androidx.lifecycle.LifecycleCoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.newSingleThreadContext
@@ -30,7 +29,6 @@ data class ComposeInfo(
 
 class LanguageModel(
     val applicationContext: Context,
-    val lifecycleScope: LifecycleCoroutineScope,
     val modelInfoLoader: ModelInfoLoader,
     val locale: Locale
 ) {

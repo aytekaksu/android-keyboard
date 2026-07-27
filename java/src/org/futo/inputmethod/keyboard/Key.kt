@@ -20,8 +20,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.os.Build
 import android.text.TextUtils
-import androidx.collection.MutableIntIntMap
-import androidx.collection.mutableIntIntMapOf
+import android.util.SparseIntArray
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import org.futo.inputmethod.keyboard.internal.KeyDrawParams
@@ -643,5 +642,5 @@ data class Key(
 
     // This should be invalidated (cleared) whenever something about the key that a KeyQualifier
     // depends on changes. Currently this is only pressed but may include flickDirection in future
-    var themeCache: MutableIntIntMap = mutableIntIntMapOf()
+    var themeCache = SparseIntArray()
 }

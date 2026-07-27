@@ -13,6 +13,9 @@ import android.os.ParcelFileDescriptor
 import android.provider.UserDictionary
 import android.system.Os
 import androidx.core.content.edit
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -25,6 +28,7 @@ import org.florisboard.autocorrect.api.AutocorrectPluginUiItemKind
 import org.florisboard.autocorrect.api.AutocorrectPluginUiOption
 import org.florisboard.autocorrect.api.AutocorrectPluginUiPage
 import org.florisboard.autocorrect.api.AutocorrectPluginUiSurface
+import org.futo.inputmethod.latin.BuildConfig
 import org.futo.inputmethod.latin.LegacySwipeSetting
 import org.futo.inputmethod.latin.R
 import org.futo.inputmethod.latin.localeFromString
@@ -82,6 +86,7 @@ internal class FutoHostedSettings(
     private var blacklistWord = ""
     private var selectedBlacklistWord: String? = null
     private var blacklistPage = 0
+    private var paymentReminderDays = "30"
     private var documentStatus: String? = null
     private var documentSuccessStatus: String? = null
 
@@ -97,6 +102,10 @@ internal class FutoHostedSettings(
             .sortedWith(compareBy({ it.locale.orEmpty() }, { it.word.lowercase(Locale.ROOT) }))
         val blacklist = setting(SUGGESTION_BLACKLIST).sortedWith(String.CASE_INSENSITIVE_ORDER)
         val modelOptions = setting(MODEL_OPTION_KEY)
+        val hasPaidFuto = setting(FUTO_ALREADY_PAID)
+        val paymentReminderTime = setting(FUTO_PAYMENT_REMINDER_TIME)
+        val paymentReminderDue = !hasPaidFuto && isPaymentReminderDue(paymentReminderTime)
+        val paymentLicense = setting(FUTO_PAYMENT_LICENSE)
 
         selectedModelName = selectedModelName
             ?.takeIf { selected -> models.any { it.path.name == selected } }
@@ -145,6 +154,19 @@ internal class FutoHostedSettings(
                             target = PAGE_BLACKLIST,
                             icon = AutocorrectPluginUiIcon.DELETE,
                         ),
+                        navigation(
+                            id = "openFutoSupport",
+                            title = "Support FUTO",
+                            summary = if (hasPaidFuto) {
+                                "Marked as paid — thank you for supporting the upstream engine"
+                            } else if (paymentReminderDue) {
+                                "Support reminder due — review FUTO's payment options"
+                            } else {
+                                "Payment and support options for the FUTO engine"
+                            },
+                            target = PAGE_FUTO_SUPPORT,
+                            icon = AutocorrectPluginUiIcon.INFO,
+                        ),
                     ),
                 ),
                 AutocorrectPluginUiPage(
@@ -189,15 +211,126 @@ internal class FutoHostedSettings(
                 personalDictionaryPage(personalWords),
                 blacklistPage(preferences, blacklist),
                 AutocorrectPluginUiPage(
+                    id = PAGE_FUTO_SUPPORT,
+                    title = "Support FUTO",
+                    summary = "This provider is a modified, non-commercial derivative of FUTO Keyboard.",
+                    items = buildList {
+                        add(
+                            info(
+                                id = "futoPaymentAbout",
+                                title = "FUTO develops the upstream engine",
+                                summary = "The provider remains free to use. FUTO asks users who find its work useful to support continued private, on-device keyboard development.",
+                                icon = AutocorrectPluginUiIcon.INFO,
+                            ),
+                        )
+                        add(
+                            info(
+                                id = "futoSwipeAttribution",
+                                title = "Powered by FUTO Swipe technology.",
+                                summary = "Neural glide model weights are provided by FUTO.",
+                                icon = AutocorrectPluginUiIcon.INFO,
+                            ),
+                        )
+                        if (hasPaidFuto) {
+                            add(
+                                info(
+                                    id = "futoPaymentStatus",
+                                    title = "Thank you for supporting FUTO",
+                                    summary = if (paymentLicense.isBlank()) {
+                                        "This installation is marked as already paid."
+                                    } else {
+                                        "Payment was recorded for this installation."
+                                    },
+                                    icon = AutocorrectPluginUiIcon.INFO,
+                                ),
+                            )
+                        } else {
+                            if (paymentReminderDue) {
+                                add(
+                                    info(
+                                        id = "futoPaymentReminderDue",
+                                        title = "FUTO support reminder due",
+                                        summary = "You asked to be reminded about supporting the upstream engine.",
+                                        icon = AutocorrectPluginUiIcon.INFO,
+                                    ),
+                                )
+                            }
+                            add(
+                                link(
+                                    id = "futoPay",
+                                    title = "Pay ${BuildConfig.FUTOPAY_PRICE} via FUTO",
+                                    summary = "Open FUTO's secure checkout in your browser.",
+                                    target = BuildConfig.FUTOPAY_URL,
+                                ),
+                            )
+                            add(
+                                action(
+                                    id = "futoAlreadyPaid",
+                                    title = "I already paid",
+                                    summary = "Record this locally; no account or network request is made.",
+                                    confirmation = "Mark this installation as already paid?",
+                                    icon = AutocorrectPluginUiIcon.INFO,
+                                ),
+                            )
+                        }
+                        add(
+                            choice(
+                                id = "futoPaymentReminderDays",
+                                title = "Remind me later",
+                                value = paymentReminderDays,
+                                options = listOf(
+                                    AutocorrectPluginUiOption("7", "In 7 days"),
+                                    AutocorrectPluginUiOption("30", "In 1 month"),
+                                    AutocorrectPluginUiOption("182", "In 6 months"),
+                                    AutocorrectPluginUiOption("36500", "Next century"),
+                                ),
+                                summary = paymentReminderSummary(paymentReminderTime),
+                                enabled = !hasPaidFuto,
+                            ),
+                        )
+                        add(
+                            action(
+                                id = "futoSetPaymentReminder",
+                                title = "Set support reminder",
+                                summary = "The date stays on-device and appears in provider settings when due.",
+                                enabled = !hasPaidFuto,
+                                icon = AutocorrectPluginUiIcon.REFRESH,
+                            ),
+                        )
+                        add(
+                            link(
+                                id = "futoHelp",
+                                title = "FUTO Keyboard project page",
+                                summary = "Learn more about FUTO Keyboard and its funding model.",
+                                target = FUTO_KEYBOARD_URL,
+                            ),
+                        )
+                    },
+                ),
+                AutocorrectPluginUiPage(
                     id = PAGE_QUICK,
                     title = "FUTO predictive text",
                     surface = AutocorrectPluginUiSurface.KEYBOARD,
-                    items = commonSettings(preferences, transformerEnabled) + navigation(
-                        id = "quickAdvanced",
-                        title = "Prediction strength",
-                        target = PAGE_QUICK_ADVANCED,
-                        icon = AutocorrectPluginUiIcon.TUNE,
-                    ),
+                    items = commonSettings(preferences, transformerEnabled) + buildList {
+                        if (paymentReminderDue) {
+                            add(
+                                info(
+                                    id = "futoPaymentReminderDueQuick",
+                                    title = "FUTO support reminder due",
+                                    summary = "Payment options are available in Better FlorisBoard settings.",
+                                    icon = AutocorrectPluginUiIcon.INFO,
+                                ),
+                            )
+                        }
+                        add(
+                            navigation(
+                                id = "quickAdvanced",
+                                title = "Prediction strength",
+                                target = PAGE_QUICK_ADVANCED,
+                                icon = AutocorrectPluginUiIcon.TUNE,
+                            ),
+                        )
+                    },
                 ),
                 AutocorrectPluginUiPage(
                     id = PAGE_QUICK_ADVANCED,
@@ -289,6 +422,12 @@ internal class FutoHostedSettings(
                     selectedBlacklistWord = it
                     true
                 } ?: false
+            "futoPaymentReminderDays" -> value
+                .takeIf { it in PAYMENT_REMINDER_OPTIONS }
+                ?.let {
+                    paymentReminderDays = it
+                    true
+                } ?: false
             else -> false
         }
         if (changed && itemId in LIVE_SETTING_IDS) {
@@ -334,6 +473,16 @@ internal class FutoHostedSettings(
             blacklistPage++
             true
         }
+        "futoAlreadyPaid" -> {
+            context.setSettingAndAwaitCache(FUTO_ALREADY_PAID, true)
+            true
+        }
+        "futoSetPaymentReminder" -> paymentReminderDays.toLongOrNull()?.let { days ->
+            val reminderTime = System.currentTimeMillis() / 1000L +
+                days.coerceAtMost(MAX_PAYMENT_REMINDER_DAYS) * SECONDS_PER_DAY
+            context.setSettingAndAwaitCache(FUTO_PAYMENT_REMINDER_TIME, reminderTime)
+            true
+        } ?: false
         else -> false
     }
 
@@ -1380,6 +1529,19 @@ internal class FutoHostedSettings(
         return "$first–$last of $size"
     }
 
+    private fun paymentReminderSummary(reminderTime: Long): String {
+        if (reminderTime <= 0L) {
+            return "No future reminder is set"
+        }
+        if (isPaymentReminderDue(reminderTime)) return "Support reminder is due"
+        val days = ((reminderTime - System.currentTimeMillis() / 1000L) / SECONDS_PER_DAY)
+            .coerceAtLeast(1L)
+        return "Reminder due in about $days day(s)"
+    }
+
+    private fun isPaymentReminderDue(reminderTime: Long) =
+        reminderTime > 0L && reminderTime <= System.currentTimeMillis() / 1000L
+
     private fun formatBytes(bytes: Long): String = when {
         bytes >= 1024L * 1024L * 1024L -> "%.1f GiB".format(bytes / (1024.0 * 1024.0 * 1024.0))
         bytes >= 1024L * 1024L -> "%.1f MiB".format(bytes / (1024.0 * 1024.0))
@@ -1531,6 +1693,20 @@ internal class FutoHostedSettings(
         enabled = enabled,
     )
 
+    private fun link(
+        id: String,
+        title: String,
+        summary: String,
+        target: String,
+    ) = AutocorrectPluginUiItem(
+        id = id,
+        kind = AutocorrectPluginUiItemKind.EXTERNAL_LINK,
+        title = title,
+        summary = summary,
+        target = target,
+        icon = AutocorrectPluginUiIcon.INFO,
+    )
+
     private fun pagingAction(id: String, title: String, enabled: Boolean) =
         action(id, title, enabled = enabled, icon = AutocorrectPluginUiIcon.REFRESH)
 
@@ -1599,6 +1775,7 @@ internal class FutoHostedSettings(
         const val PAGE_DICTIONARIES = "dictionaries"
         const val PAGE_PERSONAL = "personal"
         const val PAGE_BLACKLIST = "blacklist"
+        const val PAGE_FUTO_SUPPORT = "futoSupport"
         const val PAGE_QUICK = "quick"
         const val PAGE_QUICK_ADVANCED = "quickAdvanced"
         const val ALL_LANGUAGES = "*"
@@ -1612,6 +1789,10 @@ internal class FutoHostedSettings(
         const val MAX_DICTIONARY_BYTES = 512L * 1024L * 1024L
         const val COPY_BUFFER_BYTES = 64 * 1024
         const val BINARY_MIME = "application/octet-stream"
+        const val FUTO_KEYBOARD_URL = "https://keyboard.futo.tech/"
+        const val SECONDS_PER_DAY = 24L * 60L * 60L
+        const val MAX_PAYMENT_REMINDER_DAYS = 36500L
+        val PAYMENT_REMINDER_OPTIONS = setOf("7", "30", "182", "36500")
         val UNSAFE_FILE_CHARS = Regex("[^A-Za-z0-9._-]")
         val GGUF_MAGIC = byteArrayOf('G'.code.toByte(), 'G'.code.toByte(), 'U'.code.toByte(), 'F'.code.toByte())
         val JAPANESE_READING_PUNCTUATION = "？！…。〜ー、".toSet()
@@ -1641,5 +1822,18 @@ internal class FutoHostedSettings(
         )
     }
 }
+
+private val FUTO_ALREADY_PAID = SettingsKey(
+    booleanPreferencesKey("already_paid"),
+    false,
+)
+private val FUTO_PAYMENT_REMINDER_TIME = SettingsKey(
+    longPreferencesKey("notice_reminder_time"),
+    0L,
+)
+private val FUTO_PAYMENT_LICENSE = SettingsKey(
+    stringPreferencesKey("license_key"),
+    "",
+)
 
 private class DocumentFailure(message: String) : Exception(message)

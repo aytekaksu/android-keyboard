@@ -39,8 +39,13 @@ data class CachedKeyedMatcher<T>(
     val matcher: (Keyboard, Key, Int, T) -> Boolean
 ) {
     fun find(keyboard: Keyboard, key: Key, layer: Int): T? {
-        val idx = key.themeCache.getOrPut(cacheId) {
-            full.indexOfFirst { matcher(keyboard, key, layer, it) }
+        val cachedIndex = key.themeCache.indexOfKey(cacheId)
+        val idx = if (cachedIndex >= 0) {
+            key.themeCache.valueAt(cachedIndex)
+        } else {
+            full.indexOfFirst { matcher(keyboard, key, layer, it) }.also {
+                key.themeCache.put(cacheId, it)
+            }
         }
         return if(idx == -1) null else full[idx]
     }

@@ -24,8 +24,10 @@
 #include "org_futo_inputmethod_latin_DicTraverseSession.h"
 #include "org_futo_inputmethod_latin_xlm_LanguageModel.h"
 #include "defines.h"
+#ifndef FUTO_PROVIDER_ONLY
 #include "org_futo_inputmethod_latin_xlm_AdapterTrainer.h"
 #include "org_futo_voiceinput_WhisperGGML.h"
+#endif
 #include "org_futo_inputmethod_latin_xlm_ModelInfoLoader.h"
 
 /*
@@ -63,18 +65,22 @@ jint JNI_OnLoad(JavaVM *vm, void *reserved) {
         AKLOGE("ERROR: LanguageModel native registration failed");
         return -1;
     }
+#ifndef FUTO_PROVIDER_ONLY
     if (!latinime::register_AdapterTrainer(env)) {
         AKLOGE("ERROR: AdapterTrainer native registration failed");
         return -1;
     }
+#endif
     if (!latinime::register_ModelInfoLoader(env)) {
         AKLOGE("ERROR: ModelInfoLoader native registration failed");
         return -1;
     }
+#ifndef FUTO_PROVIDER_ONLY
     if (!voiceinput::register_WhisperGGML(env)) {
         AKLOGE("ERROR: WhisperGGML native registration failed");
         return -1;
     }
+#endif
     /* success -- return valid version number */
     return JNI_VERSION_1_6;
 }

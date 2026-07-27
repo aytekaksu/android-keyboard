@@ -16,4 +16,4 @@ dependencyResolutionManagement {
         }
     }
 }
-include ':autocorrect-api', ':voiceinput-shared'
+include ':autocorrect-api', ':voiceinput-shared', ':floris-autocorrect-provider'

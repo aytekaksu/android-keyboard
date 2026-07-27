@@ -39,6 +39,7 @@ import okio.buffer
 import okio.sink
 import okio.source
 import org.futo.inputmethod.latin.ActiveSubtype
+import org.futo.inputmethod.latin.BuildConfig
 import org.futo.inputmethod.latin.Subtypes
 import org.futo.inputmethod.latin.SubtypesSetting
 import org.futo.inputmethod.latin.uix.theme.presets.ClassicMaterialDark
@@ -185,14 +186,18 @@ fun forceUnlockDatastore(context: Context): DataStore<Preferences>? {
                 context.getPreferencesDataStoreFile()
             }
 
-            writeDatastoreBackup(context, newDataStore)
+            if (BuildConfig.FLAVOR != "provider") {
+                writeDatastoreBackup(context, newDataStore)
+            }
             unlockedDataStore = newDataStore
 
             // Send new values to the DefaultDataStore for any listeners
-            @OptIn(DelicateCoroutinesApi::class)
-            GlobalScope.launch {
-                newDataStore.data.collect { value ->
-                    DefaultDataStore.sharedData.emit(value)
+            if (BuildConfig.FLAVOR != "provider") {
+                @OptIn(DelicateCoroutinesApi::class)
+                GlobalScope.launch {
+                    newDataStore.data.collect { value ->
+                        DefaultDataStore.sharedData.emit(value)
+                    }
                 }
             }
 
@@ -219,7 +224,11 @@ private fun lockedDatastoreWithSubtypes(context: Context): DataStore<Preferences
 // Initializes unlockedDataStore, or uses DefaultDataStore if device is still locked (direct boot)
 val Context.dataStore: DataStore<Preferences>
     get() {
-        return unlockedDataStore ?: forceUnlockDatastore(this) ?: lockedDatastoreWithSubtypes(this)
+        return unlockedDataStore ?: forceUnlockDatastore(this) ?: if (BuildConfig.FLAVOR == "provider") {
+            error("The autocorrect provider cannot run before the user unlocks the device")
+        } else {
+            lockedDatastoreWithSubtypes(this)
+        }
     }
 
 
@@ -274,6 +283,11 @@ class DataStoreHelper {
         @JvmStatic
         fun<T> getSetting(setting: SettingsKey<T>): T = getSettingOrNull(setting.key) ?: setting.default
 
+        @JvmStatic
+        fun updateFromCommit(preferences: Preferences) {
+            currentPreferences.value = preferences
+        }
+
         suspend fun<T> awaitSetting(key: Preferences.Key<T>, value: T?) {
             currentPreferences.first { preferences -> preferences[key] == value }
         }
@@ -295,8 +309,11 @@ fun <T> Context.getSettingFlow(key: Preferences.Key<T>, default: T): Flow<T> {
 }
 
 suspend fun <T> Context.setSetting(key: Preferences.Key<T>, value: T) {
-    this.dataStore.edit { preferences ->
+    val committed = this.dataStore.edit { preferences ->
         preferences[key] = value
+    }
+    if (BuildConfig.FLAVOR == "provider") {
+        DataStoreHelper.updateFromCommit(committed)
     }
 }
 
@@ -304,7 +321,11 @@ suspend fun <T> Context.setSettingAndAwaitCache(key: Preferences.Key<T>, value: 
     val committed = dataStore.edit { preferences ->
         preferences[key] = value
     }
-    DataStoreHelper.awaitSetting(key, committed[key])
+    if (BuildConfig.FLAVOR == "provider") {
+        DataStoreHelper.updateFromCommit(committed)
+    } else {
+        DataStoreHelper.awaitSetting(key, committed[key])
+    }
 }
 
 

@@ -1,14 +1,24 @@
 The license below applies only to the original AOSP keyboard code, which is
 up to commit d847619a2b48945465f840b8d81644fa455cc115.
 
-This fork adds an external FlorisBoard predictive-text provider and modifies
-the settings entry flow so provider-owned settings can be opened without
-selecting FUTO Keyboard as the active input method.
+This is a modified, non-commercial distribution of FUTO Keyboard. The
+distributed APK is a service-only predictive-text provider for Better
+FlorisBoard, not a standalone keyboard. Better FlorisBoard renders its
+suggestions and declarative settings.
+
+FUTO-derived code is subject to the FUTO Source First License 1.1-kb in
+LICENSE.md. FUTO payment and support options remain available through the
+host-rendered provider settings.
+
+Bundled FUTO Swipe weights are subject to the FUTO Model Weights License 1.0
+in java/assets/futo-swipe/LICENSE.md. The required end-user attribution is:
+
+Powered by FUTO Swipe technology.
 
 The provider protocol module is derived from FlorisBoard:
 Copyright (C) 2026 The FlorisBoard Contributors
 Licensed under the Apache License, Version 2.0
-https://github.com/aytekaksu/florisboard/tree/main/lib/autocorrect-api
+https://github.com/aytekaksu/better-florisboard/tree/main/lib/autocorrect-api
 
 
    Copyright (c) 2008, The Android Open Source Project

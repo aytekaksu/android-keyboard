@@ -1,0 +1,290 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.compose'
+    id 'org.jetbrains.kotlin.plugin.serialization'
+}
+
+def gitOutput = { List<String> arguments, String fallback ->
+    try {
+        def output = new ByteArrayOutputStream()
+        exec {
+            commandLine(['git'] + arguments)
+            standardOutput = output
+        }
+        return output.toString().trim() ?: fallback
+    } catch (ignored) {
+        return fallback
+    }
+}
+
+def providerVersionCode = gitOutput(
+    ['rev-list', '--first-parent', '--count', 'master'],
+    '1',
+).toInteger()
+def providerVersionName = gitOutput(
+    ['describe', '--tags', '--always'],
+    'dev',
+)
+def providerAbis = providers.gradleProperty('providerAbis')
+    .orElse('armeabi-v7a,arm64-v8a,x86,x86_64')
+    .get()
+    .split(',')
+    .collect(String::trim)
+    .findAll { !it.isBlank() }
+
+def generatedAssets = layout.buildDirectory.dir('generated/providerAssets')
+def generatedEmojiAssets = layout.buildDirectory.dir('generated/providerEmojiAssets')
+def generatedProviderResources = layout.buildDirectory.dir('generated/providerResources')
+def generatedCompatSources = layout.buildDirectory.dir('generated/providerCompatSources')
+def prepareProviderAssets = tasks.register('prepareProviderAssets', Sync) {
+    from(rootProject.file('java/assets')) {
+        include 'spacing-and-punctuations/**'
+        include 'futo-swipe/LICENSE.md'
+        include 'futo-swipe/scoring.json'
+        include 'futo-swipe/honorable_sturgeon/metadata.json'
+        include 'futo-swipe/honorable_sturgeon/model_fp32.pte'
+        include 'futo-swipe/hungry_jellyfish/context_lm.pte'
+        include 'futo-swipe/hungry_jellyfish/metadata.json'
+        include 'futo-swipe/hungry_jellyfish/vocab.txt'
+        include 'futo-swipe/magic_macaw/metadata.json'
+        include 'futo-swipe/magic_macaw/model_fp32.pte'
+    }
+    from(rootProject.file('LICENSE.md')) {
+        into 'legal'
+        rename { 'FUTO-Source-First-License.md' }
+    }
+    from(rootProject.file('NOTICE')) {
+        into 'legal'
+        rename { 'NOTICE.txt' }
+    }
+    from(rootProject.file('autocorrect-api/LICENSE')) {
+        into 'legal'
+        rename { 'FlorisBoard-Autocorrect-API-LICENSE.txt' }
+    }
+    from(rootProject.file('autocorrect-api/NOTICE')) {
+        into 'legal'
+        rename { 'FlorisBoard-Autocorrect-API-NOTICE.txt' }
+    }
+    into(generatedAssets)
+}
+def generateProviderEmojiIndex = tasks.register('generateProviderEmojiIndex', Exec) {
+    def outputDirectory = generatedEmojiAssets.map { it.dir('emoji-shortcuts') }
+    inputs.files(
+        rootProject.file('java/res-large/raw/emoji_i18n.jsondlgz'),
+        rootProject.file('java/res/raw/gemoji.json'),
+        rootProject.file('java/res/raw/supplemental_emotes.json'),
+        rootProject.file('tools/generate-provider-emoji-index.py'),
+    )
+    outputs.dir outputDirectory
+    commandLine(
+        'python3',
+        rootProject.file('tools/generate-provider-emoji-index.py'),
+        rootProject.file('java/res-large/raw/emoji_i18n.jsondlgz'),
+        rootProject.file('java/res/raw/gemoji.json'),
+        rootProject.file('java/res/raw/supplemental_emotes.json'),
+        outputDirectory.get().asFile,
+    )
+}
+def prepareProviderResources = tasks.register('prepareProviderResources', Sync) {
+    from(rootProject.file('java/res/raw')) {
+        include 'main.dict'
+        into 'raw'
+    }
+    from(rootProject.file('java/res-large/raw')) {
+        include 'main_en.dict'
+        include 'main_de.dict'
+        include 'main_es.dict'
+        include 'main_fr.dict'
+        include 'main_it.dict'
+        include 'main_pt_br.dict'
+        include 'main_ru.dict'
+        include 'ml4_q6_k.gguf'
+        into 'raw'
+    }
+    from(rootProject.file('java/res/values')) {
+        include 'config-common.xml'
+        include 'config-auto-correction-thresholds.xml'
+        include 'config.xml'
+        include 'config-per-form-factor.xml'
+        include 'config-screen-metrics.xml'
+        include 'donottranslate.xml'
+        include 'gesture-input.xml'
+        include 'keypress-vibration-durations.xml'
+        include 'keypress-volumes.xml'
+        include 'predefined-subtypes.xml'
+        into 'values'
+    }
+    into(generatedProviderResources)
+}
+def generateProviderCompatSources = tasks.register('generateProviderCompatSources', Exec) {
+    dependsOn prepareProviderResources
+    inputs.files(
+        fileTree(rootProject.file('common/src')),
+        fileTree(rootProject.file('java/src')),
+        fileTree(rootProject.file('java/unstable/java')),
+        rootProject.file('tools/generate-provider-compat-sources.py'),
+        fileTree(rootProject.file('floris-autocorrect-provider/src/main/res')),
+    )
+    outputs.dir generatedCompatSources
+    commandLine(
+        'python3',
+        rootProject.file('tools/generate-provider-compat-sources.py'),
+        generatedCompatSources.get().asFile,
+        generatedProviderResources.get().asFile,
+    )
+}
+
+android {
+    namespace 'org.futo.inputmethod.latin.provider'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'org.futo.inputmethod.latin.unstable'
+        minSdk 24
+        targetSdk 35
+        versionCode providerVersionCode
+        versionName "${providerVersionName}-floris-provider"
+
+        buildConfigField 'boolean', 'IS_PLAYSTORE_BUILD', 'false'
+        buildConfigField 'boolean', 'UPDATE_CHECKING', 'false'
+        buildConfigField 'boolean', 'UPDATE_CHECKING_NETWORK', 'false'
+        buildConfigField 'String', 'FLAVOR', '"provider"'
+        buildConfigField 'String', 'BRANCH', '"floris-provider"'
+        buildConfigField 'String', 'FUTOPAY_URL', '"https://pay2.futo.org/checkout/polar/futo-keyboard/futo-keyboard-voiceinput/checkout-ready?success=redirect-to-organization-page"'
+        buildConfigField 'String', 'FUTOPAY_PRICE', '"~$6.99"'
+        buildConfigField 'String', 'GOOGLEPAY_URL', '""'
+        buildConfigField 'String', 'GOOGLEPAY_PRICE', '""'
+        buildConfigField 'String', 'PAYMENT_PRICE', 'FUTOPAY_PRICE'
+
+        externalNativeBuild {
+            cmake {
+                arguments '-DFUTO_PROVIDER_ONLY=ON'
+            }
+        }
+    }
+
+    signingConfigs {
+        debug {
+            storeFile rootProject.file('java/shared.keystore')
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+            minifyEnabled false
+            shrinkResources false
+        }
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    sourceSets {
+        main {
+            java.srcDirs = [
+                rootProject.file('common/src'),
+                rootProject.file('java/src'),
+                rootProject.file('java/unstable/java'),
+                generatedCompatSources,
+            ]
+            res.srcDirs = [
+                'src/main/res',
+                generatedProviderResources,
+            ]
+            assets.srcDirs = [generatedAssets, generatedEmojiAssets]
+            manifest.srcFile 'src/main/AndroidManifest.xml'
+        }
+    }
+
+    splits {
+        abi {
+            enable true
+            reset()
+            include(*providerAbis)
+            universalApk false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    buildFeatures {
+        buildConfig true
+        compose true
+    }
+
+    aaptOptions {
+        noCompress 'dict'
+    }
+
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
+    ndkVersion '28.2.13676358'
+    externalNativeBuild {
+        cmake {
+            path rootProject.file('native/jni/CMakeLists.txt')
+        }
+    }
+}
+
+tasks.named('preBuild').configure {
+    dependsOn(
+        prepareProviderAssets,
+        generateProviderEmojiIndex,
+        prepareProviderResources,
+        generateProviderCompatSources,
+    )
+}
+
+dependencies {
+    implementation project(':autocorrect-api')
+
+    implementation 'androidx.datastore:datastore-preferences:1.1.7'
+    implementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1'
+    implementation 'com.akuleshov7:ktoml-core:0.7.1'
+    implementation 'com.charleskorn.kaml:kaml:0.61.0'
+    implementation files(rootProject.file('libs/futo-swipe-release.aar'))
+
+    // Full upstream sources remain in the fork for history and attribution. UI and alternate-engine
+    // dependencies are compile-time stubs only; R8 removes their unreachable callers.
+    compileOnly 'androidx.core:core-ktx:1.13.1'
+    compileOnly 'androidx.lifecycle:lifecycle-runtime:2.8.4'
+    compileOnly 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.4'
+    compileOnly 'androidx.lifecycle:lifecycle-runtime-compose:2.8.4'
+    compileOnly 'androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4'
+    compileOnly 'androidx.activity:activity-compose:1.9.1'
+    compileOnly platform('androidx.compose:compose-bom:2025.06.00')
+    compileOnly 'androidx.compose.ui:ui:1.9.0'
+    compileOnly 'androidx.compose.ui:ui-graphics:1.9.0'
+    compileOnly 'androidx.compose.ui:ui-tooling-preview:1.9.0'
+    compileOnly 'androidx.compose.material3:material3'
+    compileOnly 'androidx.collection:collection:1.5.0'
+    compileOnly 'com.google.android.material:material:1.12.0'
+    compileOnly 'androidx.appcompat:appcompat:1.7.0'
+    compileOnly 'androidx.constraintlayout:constraintlayout:2.1.4'
+    compileOnly 'androidx.navigation:navigation-compose:2.10.0-alpha02'
+    compileOnly 'androidx.autofill:autofill:1.1.0'
+    compileOnly 'androidx.window:window:1.3.0'
+    compileOnly 'com.google.code.findbugs:jsr305:3.0.2'
+    compileOnly 'sh.calvin.reorderable:reorderable:3.0.0'
+    compileOnly project(':voiceinput-shared')
+    compileOnly 'com.google.protobuf:protobuf-javalite:3.8.0'
+    compileOnly 'com.google.guava:guava:33.4.8-android'
+    compileOnly(name: 'mozc-release', ext: 'aar')
+    compileOnly files(rootProject.file('libs/rime-release.aar'))
+
+}

@@ -7,14 +7,15 @@
 
 package org.futo.inputmethod.latin.autocorrect
 
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.Signature
 import android.os.Build
 import android.util.Base64
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.LifecycleRegistry
-import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import org.florisboard.autocorrect.api.AutocorrectAcceptanceKind
 import org.florisboard.autocorrect.api.AutocorrectPluginDocument
 import org.florisboard.autocorrect.api.AutocorrectPluginService
@@ -28,35 +29,31 @@ import org.futo.inputmethod.latin.uix.DataStoreHelper
 import org.futo.inputmethod.latin.uix.forceUnlockDatastore
 import java.security.MessageDigest
 
-class FlorisAutocorrectService : AutocorrectPluginService(), LifecycleOwner {
-    private lateinit var lifecycleRegistry: LifecycleRegistry
+class FlorisAutocorrectService : AutocorrectPluginService() {
+    private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private lateinit var engine: FutoAutocorrectEngine
     private lateinit var hostedSettings: FutoHostedSettings
-    private val authorizedHostPackages = mutableSetOf<String>()
-    private val hostAuthorizationLock = Any()
-
-    override val lifecycle: Lifecycle
-        get() = lifecycleRegistry
+    private val authorizedHosts = mutableMapOf<Set<String>, Boolean>()
 
     override fun onCreate() {
         super.onCreate()
         val providerContext = applicationContext
-        lifecycleRegistry = LifecycleRegistry(this).apply {
-            currentState = Lifecycle.State.INITIALIZED
-            handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
-            handleLifecycleEvent(Lifecycle.Event.ON_START)
-        }
         forceUnlockDatastore(providerContext)
         DataStoreHelper.init(providerContext)
         Settings.init(providerContext)
-        engine = FutoAutocorrectEngine(providerContext, lifecycleScope)
+        engine = FutoAutocorrectEngine(providerContext, engineScope)
         hostedSettings = FutoHostedSettings(providerContext, engine)
     }
 
     override fun onServiceDestroyed() {
+        synchronized(authorizedHosts) { authorizedHosts.clear() }
         engine.closeAsync()
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+        engineScope.cancel()
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        synchronized(authorizedHosts) { authorizedHosts.clear() }
+        return super.onUnbind(intent)
     }
 
     override suspend fun onStartSession(session: AutocorrectSession) {
@@ -64,18 +61,18 @@ class FlorisAutocorrectService : AutocorrectPluginService(), LifecycleOwner {
     }
 
     override fun isHostAuthorized(packageNames: Set<String>): Boolean {
-        synchronized(hostAuthorizationLock) {
-            if (packageNames.any { it in authorizedHostPackages }) return true
-            return packageNames.sorted().any { hostPackage ->
-                val authorized = when {
-                    hostPackage in ALLOWED_FLORISBOARD_PACKAGES ->
-                        isPairedKnownHost(hostPackage)
-                    hostPackage.startsWith("$FLORISBOARD_PACKAGE.") ->
-                        isSignedWithProvider(hostPackage)
-                    else -> false
+        val cacheKey = packageNames.toSet()
+        return synchronized(authorizedHosts) {
+            authorizedHosts.getOrPut(cacheKey) {
+                cacheKey.sorted().any { hostPackage ->
+                    when {
+                        hostPackage in ALLOWED_FLORISBOARD_PACKAGES ->
+                            isPairedKnownHost(hostPackage)
+                        hostPackage.startsWith("$FLORISBOARD_PACKAGE.") ->
+                            isSignedWithProvider(hostPackage)
+                        else -> false
+                    }
                 }
-                if (authorized) authorizedHostPackages += hostPackage
-                authorized
             }
         }
     }
