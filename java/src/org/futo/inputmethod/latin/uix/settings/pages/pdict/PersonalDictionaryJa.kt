@@ -34,7 +34,6 @@ import org.futo.inputmethod.latin.uix.UserDictionaryIO
 import org.futo.inputmethod.latin.uix.getImportedUserDictFilesForLocale
 import org.futo.inputmethod.latin.uix.removeImportedUserDictFile
 import org.futo.inputmethod.latin.uix.settings.DropDownPicker
-import org.mozc.android.inputmethod.japanese.protobuf.ProtoUserDictionaryStorage
 import java.util.Locale
 
 @Suppress("HardCodedStringLiteral")
@@ -85,11 +84,7 @@ enum class PosTypes(val text: String) {
     FREE_STANDING_WORD("独立語"),
     SUPPRESSION_WORD("抑制単語"),
     ;
-
-    val id: MozcPos
-        get() = MozcPos.valueOf(name)
 }
-typealias MozcPos = ProtoUserDictionaryStorage.UserDictionary.PosType
 
 data class JapanesePersonalWord(
     val furigana: String,
