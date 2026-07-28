@@ -134,14 +134,19 @@ fun pluginUiRequestBundle(requestId: Long, languageTags: List<String> = emptyLis
     putLong(UiKeys.REQUEST_ID, requestId)
     putStringArrayList(
         UiKeys.LANGUAGE_TAGS,
-        ArrayList(languageTags.map { it.take(UiLimits.LANGUAGE_TAG_CHARS) }.distinct().take(UiLimits.LANGUAGES)),
+        ArrayList(
+            languageTags
+                .map { it.takeWireChars(UiLimits.LANGUAGE_TAG_CHARS) }
+                .distinct()
+                .take(UiLimits.LANGUAGES),
+        ),
     )
 }
 
 fun pluginUiMutationBundle(requestId: Long, itemId: String, value: String? = null) = Bundle().apply {
     putLong(UiKeys.REQUEST_ID, requestId)
-    putString(UiKeys.ITEM_ID, itemId.take(UiLimits.ID_CHARS))
-    putString(UiKeys.VALUE, value?.take(UiLimits.VALUE_CHARS))
+    putString(UiKeys.ITEM_ID, itemId.takeWireChars(UiLimits.ID_CHARS))
+    putString(UiKeys.VALUE, value?.takeWireChars(UiLimits.VALUE_CHARS))
 }
 
 fun pluginUiDocumentBundle(
@@ -153,9 +158,9 @@ fun pluginUiDocumentBundle(
     fileDescriptor: ParcelFileDescriptor,
 ) = Bundle().apply {
     putLong(UiKeys.REQUEST_ID, requestId)
-    putString(UiKeys.ITEM_ID, itemId.take(UiLimits.ID_CHARS))
-    putString(UiKeys.DISPLAY_NAME, displayName?.take(UiLimits.FILE_NAME_CHARS))
-    putString(UiKeys.MIME_TYPE, mimeType?.take(UiLimits.MIME_TYPE_CHARS))
+    putString(UiKeys.ITEM_ID, itemId.takeWireChars(UiLimits.ID_CHARS))
+    putString(UiKeys.DISPLAY_NAME, displayName?.takeWireChars(UiLimits.FILE_NAME_CHARS))
+    putString(UiKeys.MIME_TYPE, mimeType?.takeWireChars(UiLimits.MIME_TYPE_CHARS))
     putBoolean(UiKeys.WRITE, write)
     putParcelable(UiKeys.FILE_DESCRIPTOR, fileDescriptor)
 }
@@ -181,15 +186,15 @@ internal fun Bundle.pluginUiRequestId() = getLong(UiKeys.REQUEST_ID)
 internal fun Bundle.pluginUiLanguageTags() =
     getStringArrayList(UiKeys.LANGUAGE_TAGS)
         .orEmpty()
-        .map { it.take(UiLimits.LANGUAGE_TAG_CHARS) }
+        .map { it.takeWireChars(UiLimits.LANGUAGE_TAG_CHARS) }
         .distinct()
         .take(UiLimits.LANGUAGES)
 
 internal fun Bundle.pluginUiItemId() =
-    getString(UiKeys.ITEM_ID).orEmpty().take(UiLimits.ID_CHARS)
+    getString(UiKeys.ITEM_ID).orEmpty().takeWireChars(UiLimits.ID_CHARS)
 
 internal fun Bundle.pluginUiValue() =
-    getString(UiKeys.VALUE)?.take(UiLimits.VALUE_CHARS)
+    getString(UiKeys.VALUE)?.takeWireChars(UiLimits.VALUE_CHARS)
 
 @Suppress("DEPRECATION")
 internal fun Bundle.pluginUiDocument(): AutocorrectPluginDocument? {
@@ -200,8 +205,8 @@ internal fun Bundle.pluginUiDocument(): AutocorrectPluginDocument? {
     }
     return AutocorrectPluginDocument(
         itemId = itemId,
-        displayName = getString(UiKeys.DISPLAY_NAME)?.take(UiLimits.FILE_NAME_CHARS),
-        mimeType = getString(UiKeys.MIME_TYPE)?.take(UiLimits.MIME_TYPE_CHARS),
+        displayName = getString(UiKeys.DISPLAY_NAME)?.takeWireChars(UiLimits.FILE_NAME_CHARS),
+        mimeType = getString(UiKeys.MIME_TYPE)?.takeWireChars(UiLimits.MIME_TYPE_CHARS),
         write = getBoolean(UiKeys.WRITE),
         fileDescriptor = fileDescriptor,
     )
@@ -209,8 +214,8 @@ internal fun Bundle.pluginUiDocument(): AutocorrectPluginDocument? {
 
 private fun AutocorrectPluginUi.toBundle() = Bundle().apply {
     val budget = UiBudget()
-    putString(UiKeys.APP_ROOT, appRootPageId?.take(UiLimits.ID_CHARS))
-    putString(UiKeys.KEYBOARD_ROOT, keyboardRootPageId?.take(UiLimits.ID_CHARS))
+    putString(UiKeys.APP_ROOT, appRootPageId?.takeWireChars(UiLimits.ID_CHARS))
+    putString(UiKeys.KEYBOARD_ROOT, keyboardRootPageId?.takeWireChars(UiLimits.ID_CHARS))
     putParcelableArrayList(
         UiKeys.PAGES,
         ArrayList(pages.take(UiLimits.PAGES).map { it.toBundle(budget) }),
@@ -220,9 +225,9 @@ private fun AutocorrectPluginUi.toBundle() = Bundle().apply {
 private fun AutocorrectPluginUiPage.toBundle(budget: UiBudget) = Bundle().apply {
     val pageItems = items.take(minOf(UiLimits.ITEMS_PER_PAGE, budget.items))
     budget.items -= pageItems.size
-    putString(UiKeys.ID, id.take(UiLimits.ID_CHARS))
-    putString(UiKeys.TITLE, title.take(UiLimits.TEXT_CHARS))
-    putString(UiKeys.SUMMARY, summary?.take(UiLimits.TEXT_CHARS))
+    putString(UiKeys.ID, id.takeWireChars(UiLimits.ID_CHARS))
+    putString(UiKeys.TITLE, title.takeWireChars(UiLimits.TEXT_CHARS))
+    putString(UiKeys.SUMMARY, summary?.takeWireChars(UiLimits.TEXT_CHARS))
     putString(UiKeys.SURFACE, surface.name)
     putParcelableArrayList(
         UiKeys.ITEMS,
@@ -233,11 +238,11 @@ private fun AutocorrectPluginUiPage.toBundle(budget: UiBudget) = Bundle().apply 
 private fun AutocorrectPluginUiItem.toBundle(budget: UiBudget) = Bundle().apply {
     val itemOptions = options.take(minOf(UiLimits.OPTIONS_PER_ITEM, budget.options))
     budget.options -= itemOptions.size
-    putString(UiKeys.ID, id.take(UiLimits.ID_CHARS))
+    putString(UiKeys.ID, id.takeWireChars(UiLimits.ID_CHARS))
     putString(UiKeys.KIND, kind.name)
-    putString(UiKeys.TITLE, title.take(UiLimits.TEXT_CHARS))
-    putString(UiKeys.SUMMARY, summary?.take(UiLimits.TEXT_CHARS))
-    putString(UiKeys.VALUE, value?.take(UiLimits.VALUE_CHARS))
+    putString(UiKeys.TITLE, title.takeWireChars(UiLimits.TEXT_CHARS))
+    putString(UiKeys.SUMMARY, summary?.takeWireChars(UiLimits.TEXT_CHARS))
+    putString(UiKeys.VALUE, value?.takeWireChars(UiLimits.VALUE_CHARS))
     putParcelableArrayList(
         UiKeys.OPTIONS,
         ArrayList(itemOptions.map(AutocorrectPluginUiOption::toBundle)),
@@ -248,26 +253,26 @@ private fun AutocorrectPluginUiItem.toBundle(budget: UiBudget) = Bundle().apply 
     putString(UiKeys.TARGET, target.boundedTarget(kind))
     putString(UiKeys.ICON, icon.name)
     putBoolean(UiKeys.ENABLED, enabled)
-    putString(UiKeys.CONFIRMATION, confirmation?.take(UiLimits.TEXT_CHARS))
+    putString(UiKeys.CONFIRMATION, confirmation?.takeWireChars(UiLimits.TEXT_CHARS))
     putStringArrayList(
         UiKeys.DOCUMENT_MIME_TYPES,
         ArrayList(
             documentMimeTypes
-                .map { it.take(UiLimits.MIME_TYPE_CHARS) }
+                .map { it.takeWireChars(UiLimits.MIME_TYPE_CHARS) }
                 .distinct()
                 .take(UiLimits.MIME_TYPES),
         ),
     )
     putString(
         UiKeys.DOCUMENT_SUGGESTED_NAME,
-        documentSuggestedName?.take(UiLimits.FILE_NAME_CHARS),
+        documentSuggestedName?.takeWireChars(UiLimits.FILE_NAME_CHARS),
     )
     putString(UiKeys.HOST_SETTING, hostSetting.name)
 }
 
 private fun AutocorrectPluginUiOption.toBundle() = Bundle().apply {
-    putString(UiKeys.VALUE, value.take(UiLimits.VALUE_CHARS))
-    putString(UiKeys.TITLE, label.take(UiLimits.TEXT_CHARS))
+    putString(UiKeys.VALUE, value.takeWireChars(UiLimits.VALUE_CHARS))
+    putString(UiKeys.TITLE, label.takeWireChars(UiLimits.TEXT_CHARS))
 }
 
 @Suppress("DEPRECATION")
@@ -279,17 +284,22 @@ private fun Bundle.toPluginUi(): AutocorrectPluginUi {
         .mapNotNull { it.toPluginUiPage(budget) }
         .distinctBy(AutocorrectPluginUiPage::id)
     return AutocorrectPluginUi(
-        appRootPageId = getString(UiKeys.APP_ROOT)?.take(UiLimits.ID_CHARS),
-        keyboardRootPageId = getString(UiKeys.KEYBOARD_ROOT)?.take(UiLimits.ID_CHARS),
+        appRootPageId = getString(UiKeys.APP_ROOT)?.takeWireChars(UiLimits.ID_CHARS),
+        keyboardRootPageId = getString(UiKeys.KEYBOARD_ROOT)
+            ?.takeWireChars(UiLimits.ID_CHARS),
         pages = pages,
     )
 }
 
 @Suppress("DEPRECATION")
 private fun Bundle.toPluginUiPage(budget: UiBudget): AutocorrectPluginUiPage? {
-    val id = getString(UiKeys.ID)?.take(UiLimits.ID_CHARS)?.takeIf(String::isNotBlank)
+    val id = getString(UiKeys.ID)
+        ?.takeWireChars(UiLimits.ID_CHARS)
+        ?.takeIf(String::isNotBlank)
         ?: return null
-    val title = getString(UiKeys.TITLE)?.take(UiLimits.TEXT_CHARS)?.takeIf(String::isNotBlank)
+    val title = getString(UiKeys.TITLE)
+        ?.takeWireChars(UiLimits.TEXT_CHARS)
+        ?.takeIf(String::isNotBlank)
         ?: return null
     val itemBundles = getParcelableArrayList<Bundle>(UiKeys.ITEMS)
         .orEmpty()
@@ -301,7 +311,7 @@ private fun Bundle.toPluginUiPage(budget: UiBudget): AutocorrectPluginUiPage? {
     return AutocorrectPluginUiPage(
         id = id,
         title = title,
-        summary = getString(UiKeys.SUMMARY)?.take(UiLimits.TEXT_CHARS),
+        summary = getString(UiKeys.SUMMARY)?.takeWireChars(UiLimits.TEXT_CHARS),
         surface = enumValueOrDefault(
             getString(UiKeys.SURFACE),
             AutocorrectPluginUiSurface.APP,
@@ -312,9 +322,13 @@ private fun Bundle.toPluginUiPage(budget: UiBudget): AutocorrectPluginUiPage? {
 
 @Suppress("DEPRECATION")
 private fun Bundle.toPluginUiItem(budget: UiBudget): AutocorrectPluginUiItem? {
-    val id = getString(UiKeys.ID)?.take(UiLimits.ID_CHARS)?.takeIf(String::isNotBlank)
+    val id = getString(UiKeys.ID)
+        ?.takeWireChars(UiLimits.ID_CHARS)
+        ?.takeIf(String::isNotBlank)
         ?: return null
-    val title = getString(UiKeys.TITLE)?.take(UiLimits.TEXT_CHARS)?.takeIf(String::isNotBlank)
+    val title = getString(UiKeys.TITLE)
+        ?.takeWireChars(UiLimits.TEXT_CHARS)
+        ?.takeIf(String::isNotBlank)
         ?: return null
     val rawMinimum = getDouble(UiKeys.MINIMUM)
     val rawMaximum = getDouble(UiKeys.MAXIMUM, 1.0)
@@ -332,8 +346,10 @@ private fun Bundle.toPluginUiItem(budget: UiBudget): AutocorrectPluginUiItem? {
     val itemOptions = optionBundles
         .map {
             AutocorrectPluginUiOption(
-                value = it.getString(UiKeys.VALUE).orEmpty().take(UiLimits.VALUE_CHARS),
-                label = it.getString(UiKeys.TITLE).orEmpty().take(UiLimits.TEXT_CHARS),
+                value = it.getString(UiKeys.VALUE).orEmpty()
+                    .takeWireChars(UiLimits.VALUE_CHARS),
+                label = it.getString(UiKeys.TITLE).orEmpty()
+                    .takeWireChars(UiLimits.TEXT_CHARS),
             )
         }
         .distinctBy(AutocorrectPluginUiOption::value)
@@ -345,8 +361,8 @@ private fun Bundle.toPluginUiItem(budget: UiBudget): AutocorrectPluginUiItem? {
         id = id,
         kind = kind,
         title = title,
-        summary = getString(UiKeys.SUMMARY)?.take(UiLimits.TEXT_CHARS),
-        value = getString(UiKeys.VALUE)?.take(UiLimits.VALUE_CHARS),
+        summary = getString(UiKeys.SUMMARY)?.takeWireChars(UiLimits.TEXT_CHARS),
+        value = getString(UiKeys.VALUE)?.takeWireChars(UiLimits.VALUE_CHARS),
         options = itemOptions,
         minimum = minimum,
         maximum = maximum,
@@ -358,14 +374,14 @@ private fun Bundle.toPluginUiItem(budget: UiBudget): AutocorrectPluginUiItem? {
         target = getString(UiKeys.TARGET).boundedTarget(kind),
         icon = enumValueOrDefault(getString(UiKeys.ICON), AutocorrectPluginUiIcon.NONE),
         enabled = getBoolean(UiKeys.ENABLED, true),
-        confirmation = getString(UiKeys.CONFIRMATION)?.take(UiLimits.TEXT_CHARS),
+        confirmation = getString(UiKeys.CONFIRMATION)?.takeWireChars(UiLimits.TEXT_CHARS),
         documentMimeTypes = getStringArrayList(UiKeys.DOCUMENT_MIME_TYPES)
             .orEmpty()
-            .map { it.take(UiLimits.MIME_TYPE_CHARS) }
+            .map { it.takeWireChars(UiLimits.MIME_TYPE_CHARS) }
             .distinct()
             .take(UiLimits.MIME_TYPES),
         documentSuggestedName = getString(UiKeys.DOCUMENT_SUGGESTED_NAME)
-            ?.take(UiLimits.FILE_NAME_CHARS),
+            ?.takeWireChars(UiLimits.FILE_NAME_CHARS),
         hostSetting = if (kind == AutocorrectPluginUiItemKind.SWITCH) {
             enumValueOrDefault(
                 getString(UiKeys.HOST_SETTING),
@@ -384,7 +400,7 @@ private fun String?.boundedTarget(kind: AutocorrectPluginUiItemKind) =
         kind != AutocorrectPluginUiItemKind.EXTERNAL_LINK ||
             it.orEmpty().length <= UiLimits.TARGET_CHARS
     }
-        ?.take(UiLimits.TARGET_CHARS)
+        ?.takeWireChars(UiLimits.TARGET_CHARS)
 
 private inline fun <reified T : Enum<T>> enumValueOrDefault(value: String?, default: T): T {
     return enumValues<T>().firstOrNull { it.name == value } ?: default

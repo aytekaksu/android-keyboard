@@ -65,6 +65,13 @@ object AutocorrectPluginContract {
     const val MAX_USER_DICTIONARY_LANGUAGE_TAGS = 16
 }
 
+internal fun String.takeWireChars(maxChars: Int): String {
+    require(maxChars >= 0)
+    val end = minOf(length, maxChars)
+    if (end == 0 || !Character.isHighSurrogate(this[end - 1])) return substring(0, end)
+    return substring(0, end - 1)
+}
+
 enum class AutocorrectCandidateKind {
     TYPED,
     CORRECTION,
@@ -182,26 +189,41 @@ data class AutocorrectRequest(
     }
 
     companion object {
-        internal fun fromBundle(bundle: Bundle) = AutocorrectRequest(
-            sessionId = bundle.getLong(Keys.SESSION_ID),
-            requestId = bundle.getLong(Keys.REQUEST_ID),
-            text = bundle.getString(Keys.TEXT).orEmpty().take(AutocorrectPluginContract.MAX_CONTEXT_CHARS),
-            selectionStart = bundle.getInt(Keys.SELECTION_START, -1),
-            selectionEnd = bundle.getInt(Keys.SELECTION_END, -1),
-            composingStart = bundle.getInt(Keys.COMPOSING_START, -1),
-            composingEnd = bundle.getInt(Keys.COMPOSING_END, -1),
-            currentWordStart = bundle.getInt(Keys.CURRENT_WORD_START, -1),
-            currentWordEnd = bundle.getInt(Keys.CURRENT_WORD_END, -1),
-            maxCandidateCount = bundle.getInt(Keys.MAX_CANDIDATE_COUNT, 3)
-                .coerceIn(1, AutocorrectPluginContract.MAX_CANDIDATES),
-            allowPossiblyOffensive = bundle.getBoolean(Keys.ALLOW_POSSIBLY_OFFENSIVE),
-            inputTrace = bundle.getBundle(Keys.INPUT_TRACE)?.toAutocorrectInputTrace()
-                ?: AutocorrectInputTrace.Empty,
-            capsMode = bundle.enumValueOrDefault(
-                Keys.REQUEST_CAPS_MODE,
-                AutocorrectCapsMode.UNSPECIFIED,
-            ),
-        )
+        internal fun fromBundle(bundle: Bundle): AutocorrectRequest {
+            val text = bundle.getString(Keys.TEXT).orEmpty()
+                .takeWireChars(AutocorrectPluginContract.MAX_CONTEXT_CHARS)
+            fun boundedOffset(key: String) = bundle.getInt(key, -1)
+                .takeIf { it in 0..text.length }
+                ?: -1
+            fun boundedRange(startKey: String, endKey: String): Pair<Int, Int> {
+                val start = boundedOffset(startKey)
+                val end = boundedOffset(endKey)
+                return if (start >= 0 && end >= start) start to end else -1 to -1
+            }
+            val selection = boundedRange(Keys.SELECTION_START, Keys.SELECTION_END)
+            val composing = boundedRange(Keys.COMPOSING_START, Keys.COMPOSING_END)
+            val currentWord = boundedRange(Keys.CURRENT_WORD_START, Keys.CURRENT_WORD_END)
+            return AutocorrectRequest(
+                sessionId = bundle.getLong(Keys.SESSION_ID),
+                requestId = bundle.getLong(Keys.REQUEST_ID),
+                text = text,
+                selectionStart = selection.first,
+                selectionEnd = selection.second,
+                composingStart = composing.first,
+                composingEnd = composing.second,
+                currentWordStart = currentWord.first,
+                currentWordEnd = currentWord.second,
+                maxCandidateCount = bundle.getInt(Keys.MAX_CANDIDATE_COUNT, 3)
+                    .coerceIn(1, AutocorrectPluginContract.MAX_CANDIDATES),
+                allowPossiblyOffensive = bundle.getBoolean(Keys.ALLOW_POSSIBLY_OFFENSIVE),
+                inputTrace = bundle.getBundle(Keys.INPUT_TRACE)?.toAutocorrectInputTrace()
+                    ?: AutocorrectInputTrace.Empty,
+                capsMode = bundle.enumValueOrDefault(
+                    Keys.REQUEST_CAPS_MODE,
+                    AutocorrectCapsMode.UNSPECIFIED,
+                ),
+            )
+        }
     }
 }
 
@@ -219,11 +241,11 @@ data class AutocorrectCandidate(
     val separatorBehavior: AutocorrectSeparatorBehavior = AutocorrectSeparatorBehavior.DEFAULT,
 ) {
     internal fun toBundle() = Bundle().apply {
-        putString(Keys.ID, id.take(AutocorrectPluginContract.MAX_CANDIDATE_ID_CHARS))
-        putString(Keys.TEXT, text.take(AutocorrectPluginContract.MAX_CANDIDATE_TEXT_CHARS))
+        putString(Keys.ID, id.takeWireChars(AutocorrectPluginContract.MAX_CANDIDATE_ID_CHARS))
+        putString(Keys.TEXT, text.takeWireChars(AutocorrectPluginContract.MAX_CANDIDATE_TEXT_CHARS))
         putString(
             Keys.SECONDARY_TEXT,
-            secondaryText?.take(AutocorrectPluginContract.MAX_SECONDARY_TEXT_CHARS),
+            secondaryText?.takeWireChars(AutocorrectPluginContract.MAX_SECONDARY_TEXT_CHARS),
         )
         putDouble(Keys.CONFIDENCE, confidence.normalizedConfidence())
         putString(Keys.KIND, kind.name)
@@ -238,22 +260,31 @@ data class AutocorrectCandidate(
     companion object {
         internal fun fromBundle(bundle: Bundle): AutocorrectCandidate? {
             val text = bundle.getString(Keys.TEXT)
-                ?.take(AutocorrectPluginContract.MAX_CANDIDATE_TEXT_CHARS)
+                ?.takeWireChars(AutocorrectPluginContract.MAX_CANDIDATE_TEXT_CHARS)
                 ?.takeIf { it.isNotBlank() }
                 ?: return null
+            val rawReplacementStart = bundle.getInt(Keys.REPLACEMENT_START, -1)
+            val rawReplacementEnd = bundle.getInt(Keys.REPLACEMENT_END, -1)
+            val hasReplacement = rawReplacementStart != -1 || rawReplacementEnd != -1
+            if (
+                hasReplacement &&
+                (rawReplacementStart < 0 || rawReplacementEnd < rawReplacementStart)
+            ) {
+                return null
+            }
             return AutocorrectCandidate(
                 id = bundle.getString(Keys.ID).orEmpty()
-                    .take(AutocorrectPluginContract.MAX_CANDIDATE_ID_CHARS),
+                    .takeWireChars(AutocorrectPluginContract.MAX_CANDIDATE_ID_CHARS),
                 text = text,
                 secondaryText = bundle.getString(Keys.SECONDARY_TEXT)
-                    ?.take(AutocorrectPluginContract.MAX_SECONDARY_TEXT_CHARS),
+                    ?.takeWireChars(AutocorrectPluginContract.MAX_SECONDARY_TEXT_CHARS),
                 confidence = bundle.getDouble(Keys.CONFIDENCE).normalizedConfidence(),
                 kind = bundle.enumValueOrDefault(Keys.KIND, AutocorrectCandidateKind.COMPLETION),
                 autoCommit = bundle.getBoolean(Keys.AUTO_COMMIT),
                 removable = bundle.getBoolean(Keys.REMOVABLE),
                 visible = bundle.getBoolean(Keys.VISIBLE, true),
-                replacementStart = bundle.getInt(Keys.REPLACEMENT_START, -1),
-                replacementEnd = bundle.getInt(Keys.REPLACEMENT_END, -1),
+                replacementStart = rawReplacementStart,
+                replacementEnd = rawReplacementEnd,
                 separatorBehavior = bundle.enumValueOrDefault(
                     Keys.SEPARATOR_BEHAVIOR,
                     AutocorrectSeparatorBehavior.DEFAULT,
@@ -263,6 +294,12 @@ data class AutocorrectCandidate(
     }
 }
 
+/**
+ * Suggestions returned for the current composing state.
+ *
+ * [boostedCodePoints] contains Unicode code points which are likely next input for this locale and
+ * editor. The host may use them for predictive hit testing; they do not redefine text boundaries.
+ */
 data class AutocorrectSuggestionResult(
     val candidates: List<AutocorrectCandidate>,
     val boostedCodePoints: Set<Int> = emptySet(),
@@ -305,11 +342,12 @@ internal fun suggestionResultToBundle(
 fun suggestionResultFromBundle(bundle: Bundle): Pair<Long, AutocorrectSuggestionResult> {
     val candidates = bundle.getParcelableArrayList<Bundle>(Keys.CANDIDATES)
         .orEmpty()
+        .take(AutocorrectPluginContract.MAX_CANDIDATES)
         .mapNotNull(AutocorrectCandidate::fromBundle)
     val boostedCodePoints = (bundle.getIntArray(Keys.BOOSTED_CODE_POINTS) ?: intArrayOf())
         .asSequence()
-        .filter(Character::isValidCodePoint)
         .take(AutocorrectPluginContract.MAX_BOOSTED_CODE_POINT_COUNT)
+        .filter(Character::isValidCodePoint)
         .toSet()
     return bundle.getLong(Keys.REQUEST_ID) to AutocorrectSuggestionResult(
         candidates = candidates,
@@ -330,7 +368,7 @@ fun candidateEventBundle(
     acceptanceKind: AutocorrectAcceptanceKind? = null,
 ) = Bundle().apply {
     putLong(Keys.SESSION_ID, sessionId)
-    putString(Keys.ID, candidateId.take(AutocorrectPluginContract.MAX_CANDIDATE_ID_CHARS))
+    putString(Keys.ID, candidateId.takeWireChars(AutocorrectPluginContract.MAX_CANDIDATE_ID_CHARS))
     acceptanceKind?.let { putString(Keys.ACCEPTANCE_KIND, it.name) }
 }
 

@@ -309,7 +309,7 @@ abstract class AutocorrectPluginService : Service() {
                     val sessionId = message.data.getLong(Keys.SESSION_ID)
                     if (sessionId != activeSessionId) return
                     val candidateId = message.data.getString(Keys.ID).orEmpty()
-                        .take(AutocorrectPluginContract.MAX_CANDIDATE_ID_CHARS)
+                        .takeWireChars(AutocorrectPluginContract.MAX_CANDIDATE_ID_CHARS)
                     val acceptanceKind = message.data.getString(Keys.ACCEPTANCE_KIND)?.let { value ->
                         enumValues<AutocorrectAcceptanceKind>().firstOrNull { it.name == value }
                     } ?: AutocorrectAcceptanceKind.MANUAL
@@ -321,7 +321,7 @@ abstract class AutocorrectPluginService : Service() {
                     val sessionId = message.data.getLong(Keys.SESSION_ID)
                     if (sessionId != activeSessionId) return
                     val candidateId = message.data.getString(Keys.ID).orEmpty()
-                        .take(AutocorrectPluginContract.MAX_CANDIDATE_ID_CHARS)
+                        .takeWireChars(AutocorrectPluginContract.MAX_CANDIDATE_ID_CHARS)
                     enqueueSessionOperation {
                         onSuggestionReverted(sessionId, candidateId)
                     }
@@ -331,7 +331,7 @@ abstract class AutocorrectPluginService : Service() {
                     if (sessionId != activeSessionId) return
                     val requestId = message.data.getLong(Keys.REQUEST_ID)
                     val candidateId = message.data.getString(Keys.ID).orEmpty()
-                        .take(AutocorrectPluginContract.MAX_CANDIDATE_ID_CHARS)
+                        .takeWireChars(AutocorrectPluginContract.MAX_CANDIDATE_ID_CHARS)
                     val replyTo = message.replyTo
                     enqueueSessionOperation {
                         val removed = try {
