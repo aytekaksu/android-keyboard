@@ -39,7 +39,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -262,14 +261,12 @@ abstract class AutocorrectPluginService : Service() {
         private val bindingEpoch: Long,
     ) : Handler(Looper.getMainLooper()) {
         override fun handleMessage(message: Message) {
-            if (
+            val rejected =
                 bindingEpoch != activeBindingEpoch ||
-                !isAuthorized(message) ||
+                !runCatching { isAuthorized(message) }.getOrDefault(false) ||
                 !userDictionaryClient.claimHost(message.sendingUid, message.replyTo)
-            ) {
-                if (message.what == AutocorrectPluginContract.MSG_PLUGIN_UI_DOCUMENT) {
-                    runCatching { message.data.pluginUiDocument()?.close() }
-                }
+            if (rejected) {
+                rejectMessage(message)
                 return
             }
             when (message.what) {
@@ -337,7 +334,14 @@ abstract class AutocorrectPluginService : Service() {
                         .take(AutocorrectPluginContract.MAX_CANDIDATE_ID_CHARS)
                     val replyTo = message.replyTo
                     enqueueSessionOperation {
-                        val removed = onRemoveSuggestion(sessionId, candidateId)
+                        val removed = try {
+                            onRemoveSuggestion(sessionId, candidateId)
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Exception) {
+                            Log.e(AUTOCORRECT_PLUGIN_TAG, "Suggestion removal failed", error)
+                            false
+                        }
                         replyTo.sendSafely(
                             AutocorrectPluginContract.MSG_REMOVE_RESULT,
                             android.os.Bundle().apply {
@@ -349,17 +353,26 @@ abstract class AutocorrectPluginService : Service() {
                 }
                 AutocorrectPluginContract.MSG_FINISH_SESSION -> {
                     val sessionId = message.data.getLong(Keys.SESSION_ID)
-                    if (sessionId != activeSessionId) return
-                    val finalRequest = finalRequestFromFinishSessionBundle(message.data, sessionId)
-                    suggestionJob?.cancel()
                     val replyTo = message.replyTo
-                    activeSessionId = null
-                    enqueueSessionOperation {
-                        onFinishSession(sessionId, finalRequest)
+                    if (sessionId != activeSessionId) {
                         replyTo.sendSafely(
                             AutocorrectPluginContract.MSG_FINISH_SESSION_RESULT,
                             finishSessionBundle(sessionId),
                         )
+                        return
+                    }
+                    val finalRequest = finalRequestFromFinishSessionBundle(message.data, sessionId)
+                    suggestionJob?.cancel()
+                    activeSessionId = null
+                    enqueueSessionOperation {
+                        try {
+                            onFinishSession(sessionId, finalRequest)
+                        } finally {
+                            replyTo.sendSafely(
+                                AutocorrectPluginContract.MSG_FINISH_SESSION_RESULT,
+                                finishSessionBundle(sessionId),
+                            )
+                        }
                     }
                 }
                 AutocorrectPluginContract.MSG_CANCEL -> {
@@ -459,6 +472,55 @@ abstract class AutocorrectPluginService : Service() {
             return packages.isNotEmpty() && isHostAuthorized(packages)
         }
 
+        private fun rejectMessage(message: Message) {
+            val replyTo = message.replyTo
+            when (message.what) {
+                AutocorrectPluginContract.MSG_SUGGEST -> {
+                    val request = runCatching {
+                        AutocorrectRequest.fromBundle(message.data)
+                    }.getOrNull() ?: return
+                    replyTo.sendSafely(
+                        AutocorrectPluginContract.MSG_SUGGESTIONS,
+                        suggestionResultToBundle(
+                            request.requestId,
+                            AutocorrectSuggestionResult.Unhandled,
+                        ),
+                    )
+                }
+                AutocorrectPluginContract.MSG_REMOVE -> {
+                    replyTo.sendSafely(
+                        AutocorrectPluginContract.MSG_REMOVE_RESULT,
+                        android.os.Bundle().apply {
+                            putLong(Keys.REQUEST_ID, message.data.getLong(Keys.REQUEST_ID))
+                            putBoolean(Keys.REMOVED, false)
+                        },
+                    )
+                }
+                AutocorrectPluginContract.MSG_FINISH_SESSION -> {
+                    replyTo.sendSafely(
+                        AutocorrectPluginContract.MSG_FINISH_SESSION_RESULT,
+                        finishSessionBundle(message.data.getLong(Keys.SESSION_ID)),
+                    )
+                }
+                AutocorrectPluginContract.MSG_GET_PLUGIN_UI,
+                AutocorrectPluginContract.MSG_SET_PLUGIN_UI_VALUE,
+                AutocorrectPluginContract.MSG_INVOKE_PLUGIN_UI_ACTION,
+                AutocorrectPluginContract.MSG_PLUGIN_UI_DOCUMENT -> {
+                    if (message.what == AutocorrectPluginContract.MSG_PLUGIN_UI_DOCUMENT) {
+                        runCatching { message.data.pluginUiDocument()?.close() }
+                    }
+                    replyTo.sendSafely(
+                        AutocorrectPluginContract.MSG_PLUGIN_UI_RESULT,
+                        pluginUiResultBundle(
+                            message.data.pluginUiRequestId(),
+                            false,
+                            null,
+                        ),
+                    )
+                }
+            }
+        }
+
         private fun replyWithPluginUi(
             message: Message,
             successful: Boolean? = null,
@@ -499,10 +561,6 @@ abstract class AutocorrectPluginService : Service() {
 private class HostUserDictionaryClient(
     private val callbackBindingEpoch: ThreadLocal<Long>,
 ) : AutocorrectUserDictionaryReader {
-    companion object {
-        private const val RESPONSE_TIMEOUT_MS = 2_000L
-    }
-
     private val nextRequestId = AtomicLong(1L)
     private val guard = Any()
     private val pending = mutableMapOf<Long, CompletableDeferred<AutocorrectUserDictionaryPage>>()
@@ -669,8 +727,7 @@ private class HostUserDictionaryClient(
             return AutocorrectUserDictionaryPage(AutocorrectUserDictionaryStatus.UNAVAILABLE)
         }
         val result = try {
-            withTimeoutOrNull(RESPONSE_TIMEOUT_MS) { deferred.await() }
-                ?: AutocorrectUserDictionaryPage(AutocorrectUserDictionaryStatus.UNAVAILABLE)
+            deferred.await()
         } finally {
             synchronized(guard) { pending.remove(requestId, deferred) }
         }

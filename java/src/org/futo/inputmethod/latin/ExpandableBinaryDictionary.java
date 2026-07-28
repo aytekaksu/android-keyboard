@@ -29,7 +29,6 @@ import org.futo.inputmethod.latin.makedict.FormatSpec;
 import org.futo.inputmethod.latin.makedict.UnsupportedFormatException;
 import org.futo.inputmethod.latin.makedict.WordProperty;
 import org.futo.inputmethod.latin.settings.SettingsValuesForSuggestion;
-import org.futo.inputmethod.latin.utils.AsyncResultHolder;
 import org.futo.inputmethod.latin.utils.CombinedFormatUtils;
 import org.futo.inputmethod.latin.utils.ExecutorUtils;
 import org.futo.inputmethod.latin.utils.WordInputEventForPersonalization;
@@ -39,7 +38,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
@@ -64,9 +66,6 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
 
     /** Whether to print debug output to log */
     private static final boolean DBG_STRESS_TEST = false;
-
-    private static final int TIMEOUT_FOR_READ_OPS_IN_MILLISECONDS = 100;
-    private static final int TIMEOUT_FOR_WRITE_OPS_IN_MILLISECONDS = 5_000;
 
     /**
      * The maximum length of a word in this dictionary.
@@ -179,6 +178,43 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
                 }
             }
         });
+    }
+
+    private <T> T readAfterPendingTasks(final Callable<T> task, final T interruptedValue) {
+        if (ExecutorUtils.isRunningOnBackgroundExecutor(ExecutorUtils.KEYBOARD)) {
+            if (!reloadDictionarySynchronouslyIfRequired()) {
+                return interruptedValue;
+            }
+            boolean lockAcquired = false;
+            try {
+                mLock.readLock().lockInterruptibly();
+                lockAcquired = true;
+                return task.call();
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return interruptedValue;
+            } catch (final Exception e) {
+                Log.e(TAG, "Synchronous dictionary read failed.", e);
+                return interruptedValue;
+            } finally {
+                if (lockAcquired) {
+                    mLock.readLock().unlock();
+                }
+            }
+        }
+
+        reloadDictionaryIfRequired();
+        final FutureTask<T> result = new FutureTask<>(task);
+        asyncExecuteTaskWithLock(mLock.readLock(), result);
+        try {
+            return result.get();
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return interruptedValue;
+        } catch (final ExecutionException e) {
+            Log.e(TAG, "Asynchronous dictionary read failed.", e.getCause());
+            return interruptedValue;
+        }
     }
 
     @Nullable
@@ -455,8 +491,8 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
         reloadDictionaryIfRequired();
         boolean lockAcquired = false;
         try {
-            lockAcquired = mLock.readLock().tryLock(
-                    TIMEOUT_FOR_READ_OPS_IN_MILLISECONDS, TimeUnit.MILLISECONDS);
+            mLock.readLock().lockInterruptibly();
+            lockAcquired = true;
             if (lockAcquired) {
                 if (mBinaryDictionary == null) {
                     return null;
@@ -471,7 +507,8 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
                 return codePoints;
             }
         } catch (final InterruptedException e) {
-            Log.e(TAG, "Interrupted tryLock() in getNextValidCodePoints().", e);
+            Thread.currentThread().interrupt();
+            Log.e(TAG, "Interrupted lock() in getNextValidCodePoints().", e);
         } finally {
             if (lockAcquired) {
                 mLock.readLock().unlock();
@@ -488,8 +525,8 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
         reloadDictionaryIfRequired();
         boolean lockAcquired = false;
         try {
-            lockAcquired = mLock.readLock().tryLock(
-                    TIMEOUT_FOR_READ_OPS_IN_MILLISECONDS, TimeUnit.MILLISECONDS);
+            mLock.readLock().lockInterruptibly();
+            lockAcquired = true;
             if (lockAcquired) {
                 if (mBinaryDictionary == null) {
                     return null;
@@ -506,7 +543,8 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
                 return suggestions;
             }
         } catch (final InterruptedException e) {
-            Log.e(TAG, "Interrupted tryLock() in getSuggestionsWithSessionId().", e);
+            Thread.currentThread().interrupt();
+            Log.e(TAG, "Interrupted lock() in getSuggestionsWithSessionId().", e);
         } finally {
             if (lockAcquired) {
                 mLock.readLock().unlock();
@@ -520,8 +558,8 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
         reloadDictionaryIfRequired();
         boolean lockAcquired = false;
         try {
-            lockAcquired = mLock.readLock().tryLock(
-                    TIMEOUT_FOR_READ_OPS_IN_MILLISECONDS, TimeUnit.MILLISECONDS);
+            mLock.readLock().lockInterruptibly();
+            lockAcquired = true;
             if (lockAcquired) {
                 if (mBinaryDictionary == null) {
                     return false;
@@ -529,7 +567,8 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
                 return isInDictionaryLocked(word);
             }
         } catch (final InterruptedException e) {
-            Log.e(TAG, "Interrupted tryLock() in isInDictionary().", e);
+            Thread.currentThread().interrupt();
+            Log.e(TAG, "Interrupted lock() in isInDictionary().", e);
         } finally {
             if (lockAcquired) {
                 mLock.readLock().unlock();
@@ -548,8 +587,8 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
         reloadDictionaryIfRequired();
         boolean lockAcquired = false;
         try {
-            lockAcquired = mLock.readLock().tryLock(
-                    TIMEOUT_FOR_READ_OPS_IN_MILLISECONDS, TimeUnit.MILLISECONDS);
+            mLock.readLock().lockInterruptibly();
+            lockAcquired = true;
             if (lockAcquired) {
                 if (mBinaryDictionary == null) {
                     return NOT_A_PROBABILITY;
@@ -557,7 +596,8 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
                 return mBinaryDictionary.getMaxFrequencyOfExactMatches(word);
             }
         } catch (final InterruptedException e) {
-            Log.e(TAG, "Interrupted tryLock() in getMaxFrequencyOfExactMatches().", e);
+            Thread.currentThread().interrupt();
+            Log.e(TAG, "Interrupted lock() in getMaxFrequencyOfExactMatches().", e);
         } finally {
             if (lockAcquired) {
                 mLock.readLock().unlock();
@@ -622,10 +662,7 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
             }
         });
         try {
-            if (!completed.await(
-                    TIMEOUT_FOR_WRITE_OPS_IN_MILLISECONDS, TimeUnit.MILLISECONDS)) {
-                return false;
-            }
+            completed.await();
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;
@@ -689,30 +726,51 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
             @Override
             public void run() {
                 try {
-                    if (!dictFile.exists() || isNeededToRecreate()) {
-                        // If the dictionary file does not exist or contents have been updated,
-                        // generate a new one.
-                        createNewDictionaryLocked();
-                    } else if (getBinaryDictionary() == null) {
-                        // Otherwise, load the existing dictionary.
-                        loadBinaryDictionaryLocked();
-                        final BinaryDictionary binaryDictionary = getBinaryDictionary();
-                        if (binaryDictionary != null && !(isValidDictionaryLocked()
-                                // TODO: remove the check below
-                                && matchesExpectedBinaryDictFormatVersionForThisType(
-                                        binaryDictionary.getFormatVersion()))) {
-                            // Binary dictionary or its format version is not valid. Regenerate
-                            // the dictionary file. createNewDictionaryLocked will remove the
-                            // existing files if appropriate.
-                            createNewDictionaryLocked();
-                        }
-                    }
-                    clearNeedsToRecreate();
+                    reloadDictionaryLocked(dictFile);
                 } finally {
                     isReloading.set(false);
                 }
             }
         });
+    }
+
+    private void reloadDictionaryLocked(final File dictFile) {
+        if (!dictFile.exists() || isNeededToRecreate()) {
+            // If the dictionary file does not exist or contents have been updated,
+            // generate a new one.
+            createNewDictionaryLocked();
+        } else if (getBinaryDictionary() == null) {
+            // Otherwise, load the existing dictionary.
+            loadBinaryDictionaryLocked();
+            final BinaryDictionary binaryDictionary = getBinaryDictionary();
+            if (binaryDictionary != null && !(isValidDictionaryLocked()
+                    // TODO: remove the check below
+                    && matchesExpectedBinaryDictFormatVersionForThisType(
+                            binaryDictionary.getFormatVersion()))) {
+                // Dictionary format is invalid. Regenerate it.
+                createNewDictionaryLocked();
+            }
+        }
+        clearNeedsToRecreate();
+    }
+
+    private boolean reloadDictionarySynchronouslyIfRequired() {
+        boolean lockAcquired = false;
+        try {
+            mLock.writeLock().lockInterruptibly();
+            lockAcquired = true;
+            if (isReloadRequired()) {
+                reloadDictionaryLocked(mDictFile);
+            }
+            return true;
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        } finally {
+            if (lockAcquired) {
+                mLock.writeLock().unlock();
+            }
+        }
     }
 
     /**
@@ -736,18 +794,12 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
     }
 
     public DictionaryStats getDictionaryStats() {
-        reloadDictionaryIfRequired();
-        final String dictName = mDictName;
-        final File dictFile = mDictFile;
-        final AsyncResultHolder<DictionaryStats> result =
-                new AsyncResultHolder<>("DictionaryStats");
-        asyncExecuteTaskWithLock(mLock.readLock(), new Runnable() {
+        return readAfterPendingTasks(new Callable<DictionaryStats>() {
             @Override
-            public void run() {
-                result.set(new DictionaryStats(mLocale, dictName, dictName, dictFile, 0));
+            public DictionaryStats call() {
+                return new DictionaryStats(mLocale, mDictName, mDictName, mDictFile, 0);
             }
-        });
-        return result.get(null /* defaultValue */, TIMEOUT_FOR_READ_OPS_IN_MILLISECONDS);
+        }, null);
     }
 
     @UsedForTesting
@@ -813,16 +865,13 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
      * Returns dictionary content required for syncing.
      */
     public WordProperty[] getWordPropertiesForSyncing() {
-        reloadDictionaryIfRequired();
-        final AsyncResultHolder<WordProperty[]> result =
-                new AsyncResultHolder<>("WordPropertiesForSync");
-        asyncExecuteTaskWithLock(mLock.readLock(), new Runnable() {
+        return readAfterPendingTasks(new Callable<WordProperty[]>() {
             @Override
-            public void run() {
+            public WordProperty[] call() {
                 final ArrayList<WordProperty> wordPropertyList = new ArrayList<>();
                 final BinaryDictionary binaryDictionary = getBinaryDictionary();
                 if (binaryDictionary == null) {
-                    return;
+                    return DEFAULT_WORD_PROPERTIES_FOR_SYNC;
                 }
                 int token = 0;
                 do {
@@ -836,11 +885,8 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
                     wordPropertyList.add(wordProperty);
                     token = nextWordPropertyResult.mNextToken;
                 } while (token != 0);
-                result.set(wordPropertyList.toArray(new WordProperty[wordPropertyList.size()]));
+                return wordPropertyList.toArray(new WordProperty[wordPropertyList.size()]);
             }
-        });
-        // TODO: Figure out the best timeout duration for this API.
-        return result.get(DEFAULT_WORD_PROPERTIES_FOR_SYNC,
-                TIMEOUT_FOR_READ_OPS_IN_MILLISECONDS);
+        }, DEFAULT_WORD_PROPERTIES_FOR_SYNC);
     }
 }
