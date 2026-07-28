@@ -25,12 +25,12 @@ import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import org.florisboard.autocorrect.api.AutocorrectAcceptanceKind
 import org.florisboard.autocorrect.api.AutocorrectCandidate
 import org.florisboard.autocorrect.api.AutocorrectCandidateKind
 import org.florisboard.autocorrect.api.AutocorrectCapsMode
 import org.florisboard.autocorrect.api.AutocorrectGesturePoint
 import org.florisboard.autocorrect.api.AutocorrectInputMode
+import org.florisboard.autocorrect.api.AutocorrectKeyGeometry
 import org.florisboard.autocorrect.api.AutocorrectPluginContract
 import org.florisboard.autocorrect.api.AutocorrectRequest
 import org.florisboard.autocorrect.api.AutocorrectSession
@@ -93,14 +93,14 @@ internal class FutoAutocorrectEngine(
     private val scope: CoroutineScope,
     private val hostUserDictionary: AutocorrectUserDictionaryReader,
 ) {
-    private data class CandidateRecord(
+    private class CandidateRecord(
         val word: String,
         val ngramContext: NgramContext,
         val blockPotentiallyOffensive: Boolean,
         val isEmoji: Boolean,
     )
 
-    private data class PreparedInput(
+    private class PreparedInput(
         val composer: WordComposer,
         val ngramContext: NgramContext,
         val keyboard: Keyboard,
@@ -108,7 +108,7 @@ internal class FutoAutocorrectEngine(
         val isGesture: Boolean,
     )
 
-    private data class RankedWord(
+    private class RankedWord(
         val info: SuggestedWordInfo,
         var score: Double,
     )
@@ -120,7 +120,6 @@ internal class FutoAutocorrectEngine(
     private val suggestionBlacklist =
         SuggestionBlacklist(settings, context, scope).also { it.init() }
     private val operationGuard = Mutex()
-    private val stateGuard = Mutex()
     private val candidates = LinkedHashMap<String, CandidateRecord>()
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val closeStarted = AtomicBoolean()
@@ -128,7 +127,7 @@ internal class FutoAutocorrectEngine(
     private var session: AutocorrectSession? = null
     private var lastRequest: AutocorrectRequest? = null
     private var lastKeyboard: Keyboard? = null
-    private var keyboardSignature = 0
+    private var keyboardGeometry: List<AutocorrectKeyGeometry>? = null
     private var modelPreparation: Job? = null
     private var historyFlushJob: Job? = null
     @Volatile private var preparedModels: Map<String, ModelInfoLoader>? = null
@@ -160,14 +159,12 @@ internal class FutoAutocorrectEngine(
         refreshHostUserDictionary: Boolean = false,
     ) {
         FutoTransformerModelCache.clearContext()
-        stateGuard.withLock {
-            session = newSession
-            lastRequest = null
-            candidates.clear()
-            transformerDisabled = false
-            lastKeyboard = null
-            keyboardSignature = 0
-        }
+        session = newSession
+        lastRequest = null
+        candidates.clear()
+        transformerDisabled = false
+        lastKeyboard = null
+        keyboardGeometry = null
         if (BuildConfig.FLAVOR == PROVIDER_FLAVOR) {
             EmojiSuggestionIndex.setPreferredSkinToneModifier(
                 newSession.preferredEmojiSkinToneModifier,
@@ -255,13 +252,9 @@ internal class FutoAutocorrectEngine(
     private suspend fun suggestLocked(
         request: AutocorrectRequest,
     ): AutocorrectSuggestionResult {
-        val activeSession = stateGuard.withLock {
-            if (session?.sessionId != request.sessionId) {
-                return AutocorrectSuggestionResult.Unhandled
-            }
-            lastRequest = request
-            session
-        } ?: return AutocorrectSuggestionResult.Unhandled
+        val activeSession = session?.takeIf { it.sessionId == request.sessionId }
+            ?: return AutocorrectSuggestionResult.Unhandled
+        lastRequest = request
         if (!settings.current.needsToLookupSuggestions()) {
             return AutocorrectSuggestionResult.Empty
         }
@@ -315,7 +308,7 @@ internal class FutoAutocorrectEngine(
                 null
             } else {
                 val result = try {
-                    FutoTransformerModelCache.withModel(context, model, modelLocale) {
+                    FutoTransformerModelCache.withModel(model, modelLocale) {
                         it.getSuggestions(
                             prepared.composer.composedDataSnapshot,
                             prepared.ngramContext,
@@ -371,10 +364,12 @@ internal class FutoAutocorrectEngine(
                 FutoTransformerModelCache.evict()
                 preparedModels = null
             }
-            evictDisabledTransformer()
-            stateGuard.withLock { session }?.let {
+            val activeSession = session
+            if (activeSession == null) {
+                evictDisabledTransformer()
+            } else {
                 startSessionLocked(
-                    it,
+                    activeSession,
                     forceReloadDictionaries = resourcesChanged,
                     refreshHostUserDictionary = userDictionaryChanged,
                 )
@@ -389,18 +384,8 @@ internal class FutoAutocorrectEngine(
     suspend fun accepted(
         sessionId: Long,
         candidateId: String,
-        @Suppress("UNUSED_PARAMETER") acceptanceKind: AutocorrectAcceptanceKind,
     ) = operationGuard.withLock accepted@ {
-        val record = stateGuard.withLock {
-            if (
-                session?.sessionId != sessionId ||
-                !isLearningAllowed()
-            ) {
-                null
-            } else {
-                candidates[candidateId]
-            }
-        } ?: return@accepted
+        val record = learningCandidate(sessionId, candidateId) ?: return@accepted
         if (record.isEmoji) {
             if (BuildConfig.FLAVOR != PROVIDER_FLAVOR) {
                 context.useEmoji(record.word)
@@ -414,16 +399,7 @@ internal class FutoAutocorrectEngine(
         sessionId: Long,
         candidateId: String,
     ) = operationGuard.withLock reverted@ {
-        val record = stateGuard.withLock {
-            if (
-                session?.sessionId != sessionId ||
-                !isLearningAllowed()
-            ) {
-                null
-            } else {
-                candidates[candidateId]
-            }
-        } ?: return@reverted
+        val record = learningCandidate(sessionId, candidateId) ?: return@reverted
         if (record.isEmoji) return@reverted
         dictionary.unlearnFromUserHistory(
             record.word,
@@ -438,16 +414,7 @@ internal class FutoAutocorrectEngine(
         sessionId: Long,
         candidateId: String,
     ): Boolean = operationGuard.withLock remove@ {
-        val record = stateGuard.withLock {
-            if (
-                session?.sessionId != sessionId ||
-                !isLearningAllowed()
-            ) {
-                null
-            } else {
-                candidates[candidateId]
-            }
-        } ?: return@remove false
+        val record = learningCandidate(sessionId, candidateId) ?: return@remove false
         replaceBlacklistLocked(context.getSetting(SUGGESTION_BLACKLIST) + record.word)
         if (!record.isEmoji) {
             dictionary.unlearnFromUserHistory(
@@ -468,15 +435,8 @@ internal class FutoAutocorrectEngine(
     }
 
     suspend fun textEvent(event: AutocorrectTextEvent) = operationGuard.withLock textEvent@ {
-        val request = stateGuard.withLock {
-            if (session?.sessionId != event.sessionId ||
-                !isLearningAllowed()
-            ) {
-                null
-            } else {
-                lastRequest
-            }
-        } ?: return@textEvent
+        if (session?.sessionId != event.sessionId || !isLearningAllowed()) return@textEvent
+        val request = lastRequest ?: return@textEvent
         val ngramContext = ngramContext(request)
         when (event.kind) {
             AutocorrectTextEventKind.COMMIT_TYPED,
@@ -507,26 +467,16 @@ internal class FutoAutocorrectEngine(
         sessionId: Long,
         finalRequest: AutocorrectRequest?,
     ) = operationGuard.withLock finish@ {
-        var committedEmail: String? = null
-        val finished = stateGuard.withLock {
-            if (session?.sessionId != sessionId) {
-                false
-            } else {
-                if (
-                    isLearningAllowed() &&
-                    settings.current.mInputAttributes.mIsEmailField
-                ) {
-                    committedEmail = committedEmailForFinish(
-                        sessionId,
-                        finalRequest,
-                        lastRequest,
-                    )
-                }
-                clearSessionStateLocked()
-                true
-            }
+        if (session?.sessionId != sessionId) return@finish
+        val committedEmail = if (
+            isLearningAllowed() &&
+            settings.current.mInputAttributes.mIsEmailField
+        ) {
+            committedEmailForFinish(sessionId, finalRequest, lastRequest)
+        } else {
+            null
         }
-        if (!finished) return@finish
+        clearSessionStateLocked()
         try {
             committedEmail?.let(dictionary::onEmailTyped)
         } finally {
@@ -535,12 +485,13 @@ internal class FutoAutocorrectEngine(
     }
 
     suspend fun unbindHost() = operationGuard.withLock {
-        val hadSession = stateGuard.withLock {
-            val active = session != null
-            clearSessionStateLocked()
-            active
+        val hadSession = session != null
+        clearSessionStateLocked()
+        try {
+            finishSessionLifecycle(hadSession)
+        } finally {
+            clearHostUserDictionary()
         }
-        finishSessionLifecycle(hadSession)
     }
 
     private fun clearSessionStateLocked() {
@@ -548,7 +499,7 @@ internal class FutoAutocorrectEngine(
         lastRequest = null
         candidates.clear()
         lastKeyboard = null
-        keyboardSignature = 0
+        keyboardGeometry = null
         transformerDisabled = false
         if (BuildConfig.FLAVOR == PROVIDER_FLAVOR) {
             EmojiSuggestionIndex.clearPreferredSkinToneModifier()
@@ -584,7 +535,7 @@ internal class FutoAutocorrectEngine(
                 it.name.startsWith(UserHistoryDictionary::class.java.simpleName)
             } == true)
         }
-        stateGuard.withLock { session }?.let {
+        session?.let {
             startSessionLocked(it, forceReloadDictionaries = true)
         }
         cleared
@@ -653,29 +604,33 @@ internal class FutoAutocorrectEngine(
         )
     }
 
+    private fun clearHostUserDictionary() {
+        appliedUserDictionary = emptyList()
+        transformerUserDictionaryWords = emptyList()
+        UserBinaryDictionary.setExternalSource(emptyList())
+    }
+
     private suspend fun prepareInput(
         session: AutocorrectSession,
         request: AutocorrectRequest,
     ): PreparedInput? {
         val locale = dictionary.primaryLocale.takeIf { it.language.isNotBlank() }
             ?: Locale.forLanguageTag(session.primaryLanguageTag)
-        val signature = request.inputTrace.keys.hashCode()
-        if (request.inputTrace.keys.isNotEmpty() &&
-            (lastKeyboard == null || signature != keyboardSignature)
-        ) {
-            lastKeyboard = FlorisVirtualKeyboard.create(
-                context,
-                locale,
-                session.inputType,
-                request.inputTrace,
-            )
-            keyboardSignature = signature
+        val keys = request.inputTrace.keys
+        if (lastKeyboard == null || keys != keyboardGeometry) {
+            lastKeyboard = if (keys.isEmpty()) {
+                FlorisVirtualKeyboard.createFallback(context, locale, session.inputType)
+            } else {
+                FlorisVirtualKeyboard.create(
+                    context,
+                    locale,
+                    session.inputType,
+                    request.inputTrace,
+                )
+            }
+            keyboardGeometry = keys.toList()
         }
-        val keyboard = lastKeyboard ?: FlorisVirtualKeyboard.createFallback(
-            context,
-            locale,
-            session.inputType,
-        ).also { lastKeyboard = it } ?: return null
+        val keyboard = lastKeyboard ?: return null
         val composer = WordComposer().apply {
             setCapitalizedModeAtStartComposingTime(request.capsMode.toWordComposerCapsMode())
         }
@@ -830,22 +785,23 @@ internal class FutoAutocorrectEngine(
         val dictionaryScores = dictionaryCandidates.associate {
             it.word to it.mScore.toDouble()
         }.toMutableMap()
-        var dictionaryBest = dictionaryCandidates
-            .filterNot { it.isKindOf(SuggestedWordInfo.KIND_EMOJI_SUGGESTION) }
+        val nonEmojiDictionaryCandidates = dictionaryCandidates.filterNot {
+            it.isKindOf(SuggestedWordInfo.KIND_EMOJI_SUGGESTION)
+        }
+        var dictionaryBest = nonEmojiDictionaryCandidates
             .maxByOrNull { it.mScore }
-        val dictionaryAlternative = dictionaryCandidates
+        val dictionaryAlternative = nonEmojiDictionaryCandidates
             .filterNot {
-                it.isKindOf(SuggestedWordInfo.KIND_EMOJI_SUGGESTION) ||
-                    (it.isKindOf(SuggestedWordInfo.KIND_WHITELIST) &&
-                        it.mSourceDict?.mDictType == Dictionary.TYPE_MAIN)
+                it.isKindOf(SuggestedWordInfo.KIND_WHITELIST) &&
+                    it.mSourceDict?.mDictType == Dictionary.TYPE_MAIN
             }
             .maxByOrNull { it.mScore }
-        val transformerBest = transformerCandidates.maxByOrNull { it.score }?.info
+        val transformerBest = transformerCandidates.maxByOrNull { it.score }
         if (
             dictionaryBest != null &&
             dictionaryAlternative != null &&
             dictionaryAlternative !== dictionaryBest &&
-            dictionaryAlternative.word == transformerBest?.word
+            dictionaryAlternative.word == transformerBest?.info?.word
         ) {
             dictionaryScores[dictionaryBest.word] = minOf(
                 dictionaryScores.getValue(dictionaryBest.word),
@@ -877,7 +833,7 @@ internal class FutoAutocorrectEngine(
         ) {
             dictionaryScores[historyCandidate.word] = maxOf(
                 dictionaryScores.getValue(historyCandidate.word),
-                transformerCandidates.maxOfOrNull { it.score }?.plus(1.0) ?: 0.0,
+                transformerBest.score + 1.0,
             )
         }
         val ranked = linkedMapOf<String, RankedWord>()
@@ -893,15 +849,12 @@ internal class FutoAutocorrectEngine(
                 ranked[transformer.info.word] = transformer
             }
         }
-        val sameWord = dictionaryBest?.takeIf { it.word == transformerBest?.word }
+        val sameWord = dictionaryBest?.takeIf { it.word == transformerBest?.info?.word }
         val sameWordLowercase = dictionaryBest?.takeIf {
-            it.word == transformerBest?.word?.lowercase(Locale.ROOT)
+            it.word == transformerBest?.info?.word?.lowercase(Locale.ROOT)
         }
         (sameWord ?: sameWordLowercase)?.let { agreement ->
-            val transformerScore = transformerCandidates
-                .firstOrNull { it.info === transformerBest }
-                ?.score
-                ?: 0.0
+            val transformerScore = transformerBest?.score ?: 0.0
             val score = if (sameWord != null) {
                 dictionaryScores.getValue(agreement.word).coerceAtLeast(0.0) +
                     transformerScore.coerceAtLeast(0.0)
@@ -916,8 +869,8 @@ internal class FutoAutocorrectEngine(
             sameWord != null -> sameWord.word
             sameWordLowercase != null -> sameWordLowercase.word
             dictionaryWords.mWillAutoCorrect -> dictionaryWords.autoCorrectCandidate?.word
-            transformerBest?.isAprapreateForAutoCorrection == true &&
-                prepared.typedWord.length > 1 -> transformerBest.word
+            transformerBest?.info?.isAprapreateForAutoCorrection == true &&
+                prepared.typedWord.length > 1 -> transformerBest.info.word
             else -> null
         }
         val rankedWords = ranked.values.sortedByDescending(RankedWord::score).toMutableList()
@@ -993,9 +946,8 @@ internal class FutoAutocorrectEngine(
                     AutocorrectCandidateKind.COMPLETION
                 else -> AutocorrectCandidateKind.CORRECTION
             }
-            val id = "${request.requestId}:$index:${info.word.hashCode()}"
-            id to AutocorrectCandidate(
-                id = id,
+            AutocorrectCandidate(
+                id = "${request.requestId}:$index:${info.word.hashCode()}",
                 text = info.word,
                 confidence = 1.0 - index.toDouble() / (ordered.size + 1.0),
                 kind = kind,
@@ -1006,21 +958,24 @@ internal class FutoAutocorrectEngine(
                 replacementEnd = replacementEnd,
             )
         }
-        stateGuard.withLock {
-            output.forEach { (id, candidate) ->
-                candidates[id] = CandidateRecord(
-                    word = candidate.text,
-                    ngramContext = prepared.ngramContext,
-                    blockPotentiallyOffensive = blockPotentiallyOffensive,
-                    isEmoji = candidate.kind == AutocorrectCandidateKind.EMOJI,
-                )
-            }
-            while (candidates.size > 128) {
-                candidates.remove(candidates.keys.first())
-            }
+        output.forEach { candidate ->
+            candidates[candidate.id] = CandidateRecord(
+                word = candidate.text,
+                ngramContext = prepared.ngramContext,
+                blockPotentiallyOffensive = blockPotentiallyOffensive,
+                isEmoji = candidate.kind == AutocorrectCandidateKind.EMOJI,
+            )
         }
-        return output.map(Pair<String, AutocorrectCandidate>::second)
+        while (candidates.size > 128) {
+            candidates.remove(candidates.keys.first())
+        }
+        return output
     }
+
+    private fun learningCandidate(sessionId: Long, candidateId: String) =
+        candidates[candidateId].takeIf {
+            session?.sessionId == sessionId && isLearningAllowed()
+        }
 
     private fun learn(word: String, ngramContext: NgramContext, blockOffensive: Boolean) {
         if (word.isBlank()) return

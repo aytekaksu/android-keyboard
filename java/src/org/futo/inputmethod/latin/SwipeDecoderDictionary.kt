@@ -25,7 +25,6 @@ private const val ENCODER_ASSET = "futo-swipe/honorable_sturgeon/model_fp32.pte"
 private const val ENGLISH_LM_ASSET = "futo-swipe/hungry_jellyfish/context_lm.pte"
 private const val ENGLISH_LM_VOCAB_ASSET = "futo-swipe/hungry_jellyfish/vocab.txt"
 private const val ENGLISH_DECODER_ASSET = "futo-swipe/magic_macaw/model_fp32.pte"
-private const val SCORING_ASSET = "futo-swipe/scoring.json"
 
 @Serializable
 data class Input(
@@ -336,7 +335,6 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
         const val shortBeam = 32
         const val midBeam = 64
         const val highBeam = 300
-        const val highestBeam = 300
     }
 
     private fun getOrInitDecoder(): SwipeDecoder = decoder ?: run {
@@ -344,7 +342,7 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
 
         val decoder = SwipeDecoder(
             encoderPath = swipeModelPath,
-            beamWidth = BeamValues.highestBeam,
+            beamWidth = BeamValues.highBeam,
             useExpansion = false, // ITrie contains expanded entries already
         )
 
@@ -356,31 +354,6 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
 
     override fun getNextValidCodePoints(composedData: ComposedData?): ArrayList<Int> {
         return arrayListOf()
-    }
-
-    private fun getPredictions(
-        composedData: ComposedData,
-        ngramContext: NgramContext?
-    ): ArrayList<SuggestedWords.SuggestedWordInfo>? {
-        if(true) return null
-
-        val decoder = getOrInitDecoder()
-        val wordsContext = ngramContext?.fullContext?.split(' ')?.takeLast(10) ?: emptyList()
-        decoder.setContext(wordsContext)
-
-        val results = decoder.predictNext()
-
-        //Log.d("SwipeDecoderDictionary", "getPredictions results=${results}")
-        val list = ArrayList<SuggestedWords.SuggestedWordInfo>(results.size)
-        results.forEach {
-            list.add(SuggestedWords.SuggestedWordInfo(
-                it.word, "", (it.score * 1000.0f + 10000.0f).toInt(), SuggestedWords.SuggestedWordInfo.KIND_CORRECTION, this, 0, 0
-            ).apply {
-                mOriginatesFromSwipeModel = true
-            })
-        }
-
-        return list
     }
 
     override fun getSuggestions(
@@ -403,13 +376,6 @@ class SwipeDecoderDictionary(val context: Context, val locale: Locale) : Diction
         trieWeights: FloatArray
     ): ArrayList<SuggestedWords.SuggestedWordInfo>? {
         if(context.getSetting(LegacySwipeSetting) == true) return null
-
-        if(!composedData.mIsBatchMode && composedData.mInputPointers.pointerSize == 0 && composedData.mTypedWord.isEmpty()) {
-            return getPredictions(
-                composedData,
-                ngramContext
-            )
-        }
 
         if(!composedData.mIsBatchMode) return null
 

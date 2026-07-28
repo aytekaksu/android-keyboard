@@ -31,7 +31,6 @@ import org.futo.inputmethod.latin.utils.SubtypeLocaleUtils;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -127,17 +126,13 @@ public class UserBinaryDictionary extends ExpandableBinaryDictionary {
     private static final String NAME = "userunigram";
 
     private ContentObserver mObserver;
-    final private Locale mLocale;
     final private String mLocaleString;
-    final private boolean mAlsoUseMoreRestrictiveLocales;
     private boolean mClosed;
 
     protected UserBinaryDictionary(final Context context, final Locale locale,
-                                   final boolean alsoUseMoreRestrictiveLocales,
                                    final File dictFile, final String name) {
         super(context, getDictName(name, locale, dictFile), locale, Dictionary.TYPE_USER, dictFile);
         if (null == locale) throw new NullPointerException(); // Catch the error earlier
-        mLocale = locale;
         final String localeStr = locale.toString();
         if (SubtypeLocaleUtils.NO_LANGUAGE.equals(localeStr)) {
             // If we don't have a locale, insert into the "all locales" user dictionary.
@@ -145,17 +140,12 @@ public class UserBinaryDictionary extends ExpandableBinaryDictionary {
         } else {
             mLocaleString = localeStr;
         }
-        mAlsoUseMoreRestrictiveLocales = alsoUseMoreRestrictiveLocales;
         if(UserBinaryDictionary.userDictionaryNeedsRecreation(locale)) setNeedsToRecreate();
         synchronized (UserBinaryDictionary.class) {
             sInstances.add(this);
         }
-        synchronized (this) {
-            if (!USE_HOST_DICTIONARY && getExternalSource() == null) {
-                registerContentObserver();
-            } else {
-                unregisterContentObserver();
-            }
+        if (!USE_HOST_DICTIONARY && getExternalSource() == null) {
+            registerContentObserver();
         }
         reloadDictionaryIfRequired();
     }
@@ -204,8 +194,7 @@ public class UserBinaryDictionary extends ExpandableBinaryDictionary {
             final Context context, final Locale locale, final File dictFile,
             final String dictNamePrefix, @Nullable final String account) {
         return new UserBinaryDictionary(
-                context, locale, false /* alsoUseMoreRestrictiveLocales */,
-                dictFile, dictNamePrefix + NAME);
+                context, locale, dictFile, dictNamePrefix + NAME);
     }
 
     @Override
@@ -258,39 +247,20 @@ public class UserBinaryDictionary extends ExpandableBinaryDictionary {
         // At the end, localeElements = ["en", "en_US", "en_US_POSIX"]; localeSoFar = en_US_POSIX_"
         // and request = "(locale is NULL) or (locale=?) or (locale=?) or (locale=?)"
 
-        final String[] requestArguments;
-        // If length == 3, we already have all the arguments we need (common prefix is meaningless
-        // inside variants
-        if (mAlsoUseMoreRestrictiveLocales && length < 3) {
-            request.append(" or (locale like ?)");
-            // The following creates an array with one more (null) position
-            final String[] localeElementsWithMoreRestrictiveLocalesIncluded =
-                    Arrays.copyOf(localeElements, length + 1);
-            localeElementsWithMoreRestrictiveLocalesIncluded[length] =
-                    localeElements[length - 1] + "_%";
-            requestArguments = localeElementsWithMoreRestrictiveLocalesIncluded;
-            // If for example localeElements = ["en"]
-            // then requestArguments = ["en", "en_%"]
-            // and request = (locale is NULL) or (locale=?) or (locale like ?)
-            // If localeElements = ["en", "en_US"]
-            // then requestArguments = ["en", "en_US", "en_US_%"]
-        } else {
-            requestArguments = localeElements;
-        }
         final String requestString = request.toString();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
             try {
                 addWordsFromProjectionLocked(PROJECTION_QUERY_WITH_SHORTCUT, requestString,
-                        requestArguments);
+                        localeElements);
             } catch (IllegalArgumentException e) {
                 // This may happen on some non-compliant devices where the declared API is JB+ but
                 // the SHORTCUT column is not present for some reason.
                 addWordsFromProjectionLocked(PROJECTION_QUERY_WITHOUT_SHORTCUT, requestString,
-                        requestArguments);
+                        localeElements);
             }
         } else {
             addWordsFromProjectionLocked(PROJECTION_QUERY_WITHOUT_SHORTCUT, requestString,
-                    requestArguments);
+                    localeElements);
         }
     }
 
@@ -343,8 +313,7 @@ public class UserBinaryDictionary extends ExpandableBinaryDictionary {
         if (TextUtils.isEmpty(entryLocale.getLanguage()) || TextUtils.isEmpty(mLocale.getLanguage())) {
             return false;
         }
-        return localeComponentsMatch(entryLocale, mLocale)
-                || (mAlsoUseMoreRestrictiveLocales && localeComponentsMatch(mLocale, entryLocale));
+        return localeComponentsMatch(entryLocale, mLocale);
     }
 
     private static boolean localeComponentsMatch(final Locale specified, final Locale target) {

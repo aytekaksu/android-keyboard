@@ -183,7 +183,7 @@ public class LanguageModelFacilitator(
             val options = ModelPaths.getModelOptions(context)
             val model = options[locale.language]
             if (model != null) {
-                languageModel = LanguageModel(context, model, locale)
+                languageModel = LanguageModel(model, locale)
             } else {
                 if(BuildConfig.DEBUG) Log.d(TAG, "no model for ${locale.language}")
                 skipLanguage = locale.language

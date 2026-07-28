@@ -631,9 +631,12 @@ public class DictionaryFacilitatorImpl implements DictionaryFacilitator {
 
     public void closeDictionaries() {
         final List<DictionaryGroup> dictionaryGroupsToClose;
+        final EmailDictionary emailDictionaryToClose;
         synchronized (mLock) {
             dictionaryGroupsToClose = mDictionaryGroups;
             mDictionaryGroups = new ArrayList<>();
+            emailDictionaryToClose = mEmailDictionary;
+            mEmailDictionary = null;
         }
 
         try {
@@ -643,7 +646,13 @@ public class DictionaryFacilitatorImpl implements DictionaryFacilitator {
                 }
             }
         } finally {
-            releaseSwipeDecoder();
+            try {
+                if (emailDictionaryToClose != null) {
+                    emailDictionaryToClose.close();
+                }
+            } finally {
+                releaseSwipeDecoder();
+            }
         }
     }
 

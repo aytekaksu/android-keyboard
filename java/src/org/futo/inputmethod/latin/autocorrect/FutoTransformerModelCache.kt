@@ -7,7 +7,6 @@
 
 package org.futo.inputmethod.latin.autocorrect
 
-import android.content.Context
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -27,7 +26,6 @@ internal object FutoTransformerModelCache {
     private var transformer: LanguageModel? = null
 
     suspend fun <T> withModel(
-        context: Context,
         loader: ModelInfoLoader,
         locale: Locale,
         block: suspend (LanguageModel) -> T,
@@ -39,7 +37,7 @@ internal object FutoTransformerModelCache {
             current.locale.language != locale.language
         ) {
             evictLocked()
-            transformer = LanguageModel(context.applicationContext, loader, locale)
+            transformer = LanguageModel(loader, locale)
         }
         block(checkNotNull(transformer))
     }
@@ -59,9 +57,9 @@ internal object FutoTransformerModelCache {
 
     private suspend fun evictLocked() {
         val model = transformer ?: return
+        transformer = null
         withContext(NonCancellable) {
             model.closeInternalLocked()
-            if (transformer === model) transformer = null
         }
     }
 }

@@ -488,33 +488,19 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
 
     @Override
     public ArrayList<Integer> getNextValidCodePoints(ComposedData composedData) {
-        reloadDictionaryIfRequired();
-        boolean lockAcquired = false;
-        try {
-            mLock.readLock().lockInterruptibly();
-            lockAcquired = true;
-            if (lockAcquired) {
-                if (mBinaryDictionary == null) {
-                    return null;
-                }
-                final ArrayList<Integer> codePoints =
-                        mBinaryDictionary.getNextValidCodePoints(composedData);
-                if (mBinaryDictionary.isCorrupted()) {
-                    Log.i(TAG, "Dictionary (" + mDictName +") is corrupted. "
-                            + "Remove and regenerate it.");
-                    removeBinaryDictionary();
-                }
-                return codePoints;
+        return readAfterPendingTasks(() -> {
+            if (mBinaryDictionary == null) {
+                return null;
             }
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-            Log.e(TAG, "Interrupted lock() in getNextValidCodePoints().", e);
-        } finally {
-            if (lockAcquired) {
-                mLock.readLock().unlock();
+            final ArrayList<Integer> codePoints =
+                    mBinaryDictionary.getNextValidCodePoints(composedData);
+            if (mBinaryDictionary.isCorrupted()) {
+                Log.i(TAG, "Dictionary (" + mDictName +") is corrupted. "
+                        + "Remove and regenerate it.");
+                removeBinaryDictionary();
             }
-        }
-        return null;
+            return codePoints;
+        }, null);
     }
 
     @Override
@@ -522,88 +508,37 @@ abstract public class ExpandableBinaryDictionary extends Dictionary {
             final NgramContext ngramContext, final long proximityInfoHandle,
             final SettingsValuesForSuggestion settingsValuesForSuggestion, final int sessionId,
             final float weightForLocale, final float[] inOutWeightOfLangModelVsSpatialModel) {
-        reloadDictionaryIfRequired();
-        boolean lockAcquired = false;
-        try {
-            mLock.readLock().lockInterruptibly();
-            lockAcquired = true;
-            if (lockAcquired) {
-                if (mBinaryDictionary == null) {
-                    return null;
-                }
-                final ArrayList<SuggestedWordInfo> suggestions =
-                        mBinaryDictionary.getSuggestions(composedData, ngramContext,
-                                proximityInfoHandle, settingsValuesForSuggestion, sessionId,
-                                weightForLocale, inOutWeightOfLangModelVsSpatialModel);
-                if (mBinaryDictionary.isCorrupted()) {
-                    Log.i(TAG, "Dictionary (" + mDictName +") is corrupted. "
-                            + "Remove and regenerate it.");
-                    removeBinaryDictionary();
-                }
-                return suggestions;
+        return readAfterPendingTasks(() -> {
+            if (mBinaryDictionary == null) {
+                return null;
             }
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-            Log.e(TAG, "Interrupted lock() in getSuggestionsWithSessionId().", e);
-        } finally {
-            if (lockAcquired) {
-                mLock.readLock().unlock();
+            final ArrayList<SuggestedWordInfo> suggestions =
+                    mBinaryDictionary.getSuggestions(composedData, ngramContext,
+                            proximityInfoHandle, settingsValuesForSuggestion, sessionId,
+                            weightForLocale, inOutWeightOfLangModelVsSpatialModel);
+            if (mBinaryDictionary.isCorrupted()) {
+                Log.i(TAG, "Dictionary (" + mDictName +") is corrupted. "
+                        + "Remove and regenerate it.");
+                removeBinaryDictionary();
             }
-        }
-        return null;
+            return suggestions;
+        }, null);
     }
 
     @Override
     public boolean isInDictionary(final String word) {
-        reloadDictionaryIfRequired();
-        boolean lockAcquired = false;
-        try {
-            mLock.readLock().lockInterruptibly();
-            lockAcquired = true;
-            if (lockAcquired) {
-                if (mBinaryDictionary == null) {
-                    return false;
-                }
-                return isInDictionaryLocked(word);
-            }
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-            Log.e(TAG, "Interrupted lock() in isInDictionary().", e);
-        } finally {
-            if (lockAcquired) {
-                mLock.readLock().unlock();
-            }
-        }
-        return false;
-    }
-
-    protected boolean isInDictionaryLocked(final String word) {
-        if (mBinaryDictionary == null) return false;
-        return mBinaryDictionary.isInDictionary(word);
+        return readAfterPendingTasks(
+                () -> mBinaryDictionary != null && mBinaryDictionary.isInDictionary(word),
+                false);
     }
 
     @Override
     public int getMaxFrequencyOfExactMatches(final String word) {
-        reloadDictionaryIfRequired();
-        boolean lockAcquired = false;
-        try {
-            mLock.readLock().lockInterruptibly();
-            lockAcquired = true;
-            if (lockAcquired) {
-                if (mBinaryDictionary == null) {
-                    return NOT_A_PROBABILITY;
-                }
-                return mBinaryDictionary.getMaxFrequencyOfExactMatches(word);
-            }
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-            Log.e(TAG, "Interrupted lock() in getMaxFrequencyOfExactMatches().", e);
-        } finally {
-            if (lockAcquired) {
-                mLock.readLock().unlock();
-            }
-        }
-        return NOT_A_PROBABILITY;
+        return readAfterPendingTasks(
+                () -> mBinaryDictionary == null
+                        ? NOT_A_PROBABILITY
+                        : mBinaryDictionary.getMaxFrequencyOfExactMatches(word),
+                NOT_A_PROBABILITY);
     }
 
 
