@@ -64,7 +64,7 @@ internal fun AutocorrectInputTrace.toBundle() = Bundle().apply {
         TraceKeys.KEYS,
         ArrayList(keys.take(AutocorrectPluginContract.MAX_TRACE_KEY_COUNT).map { key ->
             Bundle().apply {
-                putString(TraceKeys.TEXT, key.text.take(TraceLimits.TEXT_CHARS))
+                putString(TraceKeys.TEXT, key.text.takeWireChars(TraceLimits.TEXT_CHARS))
                 putFloat(TraceKeys.LEFT, key.left.normalized())
                 putFloat(TraceKeys.TOP, key.top.normalized())
                 putFloat(TraceKeys.RIGHT, key.right.normalized())
@@ -76,7 +76,7 @@ internal fun AutocorrectInputTrace.toBundle() = Bundle().apply {
         TraceKeys.POINTS,
         ArrayList(points.take(AutocorrectPluginContract.MAX_TRACE_POINT_COUNT).map { point ->
             Bundle().apply {
-                putString(TraceKeys.TEXT, point.text.take(TraceLimits.TEXT_CHARS))
+                putString(TraceKeys.TEXT, point.text.takeWireChars(TraceLimits.TEXT_CHARS))
                 putFloat(TraceKeys.X, point.x.normalized())
                 putFloat(TraceKeys.Y, point.y.normalized())
             }
@@ -107,7 +107,7 @@ internal fun Bundle.toAutocorrectInputTrace() = AutocorrectInputTrace(
         .take(AutocorrectPluginContract.MAX_TRACE_KEY_COUNT)
         .mapNotNull { key ->
             val text = key.getString(TraceKeys.TEXT)
-                ?.take(TraceLimits.TEXT_CHARS)
+                ?.takeWireChars(TraceLimits.TEXT_CHARS)
                 ?.takeIf(String::isNotBlank)
                 ?: return@mapNotNull null
             AutocorrectKeyGeometry(
@@ -123,7 +123,7 @@ internal fun Bundle.toAutocorrectInputTrace() = AutocorrectInputTrace(
         .take(AutocorrectPluginContract.MAX_TRACE_POINT_COUNT)
         .mapNotNull { point ->
             val text = point.getString(TraceKeys.TEXT)
-                ?.take(TraceLimits.TEXT_CHARS)
+                ?.takeWireChars(TraceLimits.TEXT_CHARS)
                 ?.takeIf(String::isNotBlank)
                 ?: return@mapNotNull null
             AutocorrectTouchPoint(

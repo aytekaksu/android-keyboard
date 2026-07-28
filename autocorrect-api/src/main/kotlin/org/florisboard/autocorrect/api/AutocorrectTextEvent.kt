@@ -37,7 +37,10 @@ data class AutocorrectTextEvent(
 ) {
     fun toBundle() = Bundle().apply {
         putLong(Keys.SESSION_ID, sessionId)
-        putString(Keys.TEXT, text.take(AutocorrectPluginContract.MAX_CANDIDATE_TEXT_CHARS))
+        putString(
+            Keys.TEXT,
+            text.takeWireChars(AutocorrectPluginContract.MAX_CANDIDATE_TEXT_CHARS),
+        )
         putString(Keys.KIND, kind.name)
     }
 
@@ -47,7 +50,7 @@ data class AutocorrectTextEvent(
                 .firstOrNull { it.name == bundle.getString(Keys.KIND) }
                 ?: AutocorrectTextEventKind.COMMIT_TYPED
             val text = bundle.getString(Keys.TEXT).orEmpty()
-                .take(AutocorrectPluginContract.MAX_CANDIDATE_TEXT_CHARS)
+                .takeWireChars(AutocorrectPluginContract.MAX_CANDIDATE_TEXT_CHARS)
             if (
                 text.isBlank() &&
                 (kind == AutocorrectTextEventKind.COMMIT_TYPED ||

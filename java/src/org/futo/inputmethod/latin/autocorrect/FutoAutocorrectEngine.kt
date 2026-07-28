@@ -29,6 +29,7 @@ import org.florisboard.autocorrect.api.AutocorrectAcceptanceKind
 import org.florisboard.autocorrect.api.AutocorrectCandidate
 import org.florisboard.autocorrect.api.AutocorrectCandidateKind
 import org.florisboard.autocorrect.api.AutocorrectCapsMode
+import org.florisboard.autocorrect.api.AutocorrectGesturePoint
 import org.florisboard.autocorrect.api.AutocorrectInputMode
 import org.florisboard.autocorrect.api.AutocorrectPluginContract
 import org.florisboard.autocorrect.api.AutocorrectRequest
@@ -36,6 +37,7 @@ import org.florisboard.autocorrect.api.AutocorrectSession
 import org.florisboard.autocorrect.api.AutocorrectSuggestionResult
 import org.florisboard.autocorrect.api.AutocorrectTextEvent
 import org.florisboard.autocorrect.api.AutocorrectTextEventKind
+import org.florisboard.autocorrect.api.AutocorrectTouchPoint
 import org.florisboard.autocorrect.api.AutocorrectUserDictionaryEntry
 import org.florisboard.autocorrect.api.AutocorrectUserDictionaryPage
 import org.florisboard.autocorrect.api.AutocorrectUserDictionaryReader
@@ -81,6 +83,7 @@ import org.futo.inputmethod.latin.xlm.BinaryDictTransformerWeightSetting
 import org.futo.inputmethod.latin.xlm.ModelInfoLoader
 import org.futo.inputmethod.latin.xlm.ModelLoadingException
 import org.futo.inputmethod.latin.xlm.ModelPaths
+import java.text.Normalizer
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.ceil
@@ -680,13 +683,14 @@ internal class FutoAutocorrectEngine(
         val isGesture = request.inputTrace.mode == AutocorrectInputMode.GESTURE
         if (isGesture) {
             val points = request.inputTrace.gesturePoints
+            val elapsedTimes = monotonicGestureTimes(points)
             val x = ResizableIntArray(points.size)
             val y = ResizableIntArray(points.size)
             val time = ResizableIntArray(points.size)
-            points.forEach { point ->
-                x.add((point.x * keyboard.mBaseWidth).toInt())
-                y.add((point.y * keyboard.mBaseHeight).toInt())
-                time.add(point.elapsedTimeMillis)
+            points.forEachIndexed { index, point ->
+                x.add(normalizedCoordinate(point.x, keyboard.mBaseWidth))
+                y.add(normalizedCoordinate(point.y, keyboard.mBaseHeight))
+                time.add(elapsedTimes[index])
             }
             val pointers = InputPointers(points.size).apply {
                 onPointerDown(0)
@@ -696,13 +700,13 @@ internal class FutoAutocorrectEngine(
             composer.setBatchInputPointers(pointers)
             composer.setBatchInputWord("")
         } else {
-            val points = request.inputTrace.points
+            val points = alignedTouchPoints(typedWord, request.inputTrace.points, locale)
             typedWord.codePoints().toArray().forEachIndexed { index, codePoint ->
-                val point = points.getOrNull(index)
-                val x = point?.let { (it.x * keyboard.mBaseWidth).toInt() }
+                val point = points[index]
+                val x = point?.let { normalizedCoordinate(it.x, keyboard.mBaseWidth) }
                     ?: keyboard.getKey(codePoint)?.let { it.x + it.width / 2 }
                     ?: -1
-                val y = point?.let { (it.y * keyboard.mBaseHeight).toInt() }
+                val y = point?.let { normalizedCoordinate(it.y, keyboard.mBaseHeight) }
                     ?: keyboard.getKey(codePoint)?.let { it.y + it.height / 2 }
                     ?: -1
                 val event = Event.createEventForCodePointFromAlreadyTypedText(codePoint, x, y)
@@ -788,7 +792,8 @@ internal class FutoAutocorrectEngine(
         }
         return codePoints.mapTo(linkedSetOf()) { codePoint ->
             layoutCodePoints.firstOrNull {
-                Character.toLowerCase(it) == Character.toLowerCase(codePoint)
+                Character.toLowerCase(it) == Character.toLowerCase(codePoint) ||
+                    Character.toUpperCase(it) == Character.toUpperCase(codePoint)
             } ?: codePoint
         }
     }
@@ -1078,6 +1083,58 @@ internal fun orderProviderSuggestions(
     .distinctBy(SuggestedWordInfo::getWord)
     .take(maxCandidateCount)
     .toList()
+
+@JvmOverloads
+internal fun alignedTouchPoints(
+    typedWord: String,
+    points: List<AutocorrectTouchPoint>,
+    locale: Locale = Locale.ROOT,
+): List<AutocorrectTouchPoint?> {
+    val expanded = buildList {
+        points.forEach { point ->
+            alignmentCodePoints(point.text, locale).forEach { codePoint ->
+                add(codePoint to point)
+            }
+        }
+    }
+    var pointIndex = 0
+    return typedWord.codePoints().toArray().map { codePoint ->
+        val expected = alignmentCodePoints(String(Character.toChars(codePoint)), locale)
+        var matchIndex = pointIndex
+        while (
+            matchIndex + expected.size <= expanded.size &&
+            expected.indices.any { expanded[matchIndex + it].first != expected[it] }
+        ) {
+            matchIndex++
+        }
+        if (matchIndex + expected.size > expanded.size) {
+            null
+        } else {
+            expanded[matchIndex].second.also {
+                pointIndex = matchIndex + expected.size
+            }
+        }
+    }
+}
+
+private fun alignmentCodePoints(text: String, locale: Locale): IntArray =
+    Normalizer.normalize(text.uppercase(locale), Normalizer.Form.NFD)
+        .codePoints()
+        .toArray()
+
+internal fun monotonicGestureTimes(points: List<AutocorrectGesturePoint>): IntArray {
+    var previous = 0
+    return IntArray(points.size) { index ->
+        points[index].elapsedTimeMillis.coerceAtLeast(previous).also {
+            previous = it
+        }
+    }
+}
+
+internal fun normalizedCoordinate(value: Float, size: Int): Int {
+    if (size <= 0) return 0
+    return (value * size).toInt().coerceIn(0, size - 1)
+}
 
 internal data class PersonalizationPolicy(
     val allowReads: Boolean,
