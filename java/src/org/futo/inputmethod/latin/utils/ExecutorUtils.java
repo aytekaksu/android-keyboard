@@ -36,6 +36,7 @@ public class ExecutorUtils {
     public static final String KEYBOARD = "Keyboard";
     public static final String SPELLING = "Spelling";
 
+    private static final ThreadLocal<String> sCurrentExecutor = new ThreadLocal<>();
     private static ScheduledExecutorService sKeyboardExecutorService = newExecutorService(KEYBOARD);
     private static ScheduledExecutorService sSpellingExecutorService = newExecutorService(SPELLING);
 
@@ -52,7 +53,17 @@ public class ExecutorUtils {
 
         @Override
         public Thread newThread(final Runnable runnable) {
-            Thread thread = new Thread(runnable, TAG);
+            Thread thread = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    sCurrentExecutor.set(mName);
+                    try {
+                        runnable.run();
+                    } finally {
+                        sCurrentExecutor.remove();
+                    }
+                }
+            }, TAG);
             thread.setUncaughtExceptionHandler(new UncaughtExceptionHandler() {
                 @Override
                 public void uncaughtException(Thread thread, Throwable ex) {
@@ -92,6 +103,10 @@ public class ExecutorUtils {
             default:
                 throw new IllegalArgumentException("Invalid executor: " + name);
         }
+    }
+
+    public static boolean isRunningOnBackgroundExecutor(final String name) {
+        return name.equals(sCurrentExecutor.get());
     }
 
     public static void killTasks(final String name) {

@@ -21,10 +21,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import org.florisboard.autocorrect.api.AutocorrectAcceptanceKind
 import org.florisboard.autocorrect.api.AutocorrectCandidate
 import org.florisboard.autocorrect.api.AutocorrectCandidateKind
@@ -83,7 +83,6 @@ import org.futo.inputmethod.latin.xlm.ModelLoadingException
 import org.futo.inputmethod.latin.xlm.ModelPaths
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.TimeUnit
 import kotlin.math.ceil
 
 internal class FutoAutocorrectEngine(
@@ -130,7 +129,6 @@ internal class FutoAutocorrectEngine(
     private var modelPreparation: Job? = null
     private var historyFlushJob: Job? = null
     @Volatile private var preparedModels: Map<String, ModelInfoLoader>? = null
-    private var transformerTimeouts = 0
     private var transformerDisabled = false
     private var appliedUserDictionary = emptyList<AutocorrectUserDictionaryEntry>()
     private var transformerUserDictionaryWords = emptyList<String>()
@@ -163,7 +161,6 @@ internal class FutoAutocorrectEngine(
             session = newSession
             lastRequest = null
             candidates.clear()
-            transformerTimeouts = 0
             transformerDisabled = false
             lastKeyboard = null
             keyboardSignature = 0
@@ -230,10 +227,8 @@ internal class FutoAutocorrectEngine(
             null,
         )
         dictionary.onStartInput()
-        withContext(Dispatchers.IO) {
-            runCatching {
-                dictionary.waitForLoadingMainDictionaries(250, TimeUnit.MILLISECONDS)
-            }
+        runInterruptible(Dispatchers.IO) {
+            dictionary.waitForLoadingMainDictionaries()
         }
         if (
             settings.current.mTransformerPredictionEnabled &&
@@ -318,27 +313,19 @@ internal class FutoAutocorrectEngine(
             } else {
                 val result = try {
                     FutoTransformerModelCache.withModel(context, model, modelLocale) {
-                        withTimeoutOrNull(325L) {
-                            it.getSuggestions(
-                                prepared.composer.composedDataSnapshot,
-                                prepared.ngramContext,
-                                prepared.keyboard.proximityInfo.nativeProximityInfo,
-                                context.getSetting(AutocorrectThresholdSetting),
-                                transformerUserDictionaryWords,
-                                context.getSetting(SUGGESTION_BLACKLIST).toTypedArray(),
-                            )
-                        }
+                        it.getSuggestions(
+                            prepared.composer.composedDataSnapshot,
+                            prepared.ngramContext,
+                            prepared.keyboard.proximityInfo.nativeProximityInfo,
+                            context.getSetting(AutocorrectThresholdSetting),
+                            transformerUserDictionaryWords,
+                            context.getSetting(SUGGESTION_BLACKLIST).toTypedArray(),
+                        )
                     }
                 } catch (error: Throwable) {
                     if (error is CancellationException) throw error
                     if (error is ModelLoadingException) transformerDisabled = true
                     null
-                }
-                if (result == null) {
-                    transformerTimeouts++
-                    transformerDisabled = transformerDisabled || transformerTimeouts > 5
-                } else {
-                    transformerTimeouts = 0
                 }
                 if (transformerDisabled) FutoTransformerModelCache.evict()
                 result
@@ -559,7 +546,6 @@ internal class FutoAutocorrectEngine(
         candidates.clear()
         lastKeyboard = null
         keyboardSignature = 0
-        transformerTimeouts = 0
         transformerDisabled = false
         if (BuildConfig.FLAVOR == PROVIDER_FLAVOR) {
             EmojiSuggestionIndex.clearPreferredSkinToneModifier()

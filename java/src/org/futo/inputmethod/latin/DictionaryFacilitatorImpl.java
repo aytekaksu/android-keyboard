@@ -520,11 +520,19 @@ public class DictionaryFacilitatorImpl implements DictionaryFacilitator {
                 oldDictionaryGroups = mDictionaryGroups;
                 mDictionaryGroups = newDictionaryGroups;
 
+                final ArrayList<DictionaryGroup> dictionariesToReload = new ArrayList<>();
                 for (DictionaryGroup dictionaryGroup : newDictionaryGroups) {
                     final Dictionary mainDict = dictionaryGroup.getDict(Dictionary.TYPE_MAIN);
                     if (mainDict == null || !mainDict.isInitialized()) {
-                        asyncReloadUninitializedMainDictionaries(context, dictionaryGroup.mLocale, listener);
+                        dictionariesToReload.add(dictionaryGroup);
                     }
+                }
+                final CountDownLatch reloadsCompleted =
+                        new CountDownLatch(dictionariesToReload.size());
+                mLatchForWaitingLoadingMainDictionaries = reloadsCompleted;
+                for (DictionaryGroup dictionaryGroup : dictionariesToReload) {
+                    asyncReloadUninitializedMainDictionaries(
+                            context, dictionaryGroup, listener, reloadsCompleted);
                 }
             }
 
@@ -552,42 +560,41 @@ public class DictionaryFacilitatorImpl implements DictionaryFacilitator {
     }
 
     private void asyncReloadUninitializedMainDictionaries(final Context context,
-            final Locale locale, final DictionaryInitializationListener listener) {
-        final CountDownLatch latchForWaitingLoadingMainDictionary = new CountDownLatch(1);
-        mLatchForWaitingLoadingMainDictionaries = latchForWaitingLoadingMainDictionary;
+            final DictionaryGroup dictionaryGroup,
+            final DictionaryInitializationListener listener,
+            final CountDownLatch reloadsCompleted) {
         ExecutorUtils.getBackgroundExecutor(ExecutorUtils.KEYBOARD).execute(new Runnable() {
             @Override
             public void run() {
                 doReloadUninitializedMainDictionaries(
-                        context, locale, listener, latchForWaitingLoadingMainDictionary);
+                        context, dictionaryGroup, listener, reloadsCompleted);
             }
         });
     }
 
-    void doReloadUninitializedMainDictionaries(final Context context, final Locale locale,
+    private void doReloadUninitializedMainDictionaries(final Context context,
+            final DictionaryGroup dictionaryGroup,
             final DictionaryInitializationListener listener,
-            final CountDownLatch latchForWaitingLoadingMainDictionary) {
-        final DictionaryGroup dictionaryGroup =
-                findDictionaryGroupWithLocale(mDictionaryGroups, locale);
-        if (null == dictionaryGroup) {
-            // This should never happen, but better safe than crashy
-            Log.w(TAG, "Expected a dictionary group for " + locale + " but none found");
-            return;
-        }
-        final Dictionary mainDict =
-                DictionaryFactory.createMainDictionaryFromManager(context, locale);
-        synchronized (mLock) {
-            if (locale.equals(dictionaryGroup.mLocale)) {
-                dictionaryGroup.setMainDict(mainDict);
-            } else {
-                // Dictionary facilitator has been reset for another locale.
-                mainDict.close();
+            final CountDownLatch reloadsCompleted) {
+        try {
+            final Locale locale = dictionaryGroup.mLocale;
+            final Dictionary mainDict =
+                    DictionaryFactory.createMainDictionaryFromManager(context, locale);
+            synchronized (mLock) {
+                if (mDictionaryGroups.contains(dictionaryGroup)) {
+                    dictionaryGroup.setMainDict(mainDict);
+                } else {
+                    // Dictionary facilitator has been reset for another locale.
+                    mainDict.close();
+                }
             }
+            if (listener != null) {
+                listener.onUpdateMainDictionaryAvailability(
+                        hasAtLeastOneInitializedMainDictionary());
+            }
+        } finally {
+            reloadsCompleted.countDown();
         }
-        if (listener != null) {
-            listener.onUpdateMainDictionaryAvailability(hasAtLeastOneInitializedMainDictionary());
-        }
-        latchForWaitingLoadingMainDictionary.countDown();
     }
 
     @UsedForTesting
@@ -668,6 +675,12 @@ public class DictionaryFacilitatorImpl implements DictionaryFacilitator {
         return false;
     }
 
+    @Override
+    public void waitForLoadingMainDictionaries() throws InterruptedException {
+        mLatchForWaitingLoadingMainDictionaries.await();
+    }
+
+    @Override
     public void waitForLoadingMainDictionaries(final long timeout, final TimeUnit unit)
             throws InterruptedException {
         mLatchForWaitingLoadingMainDictionaries.await(timeout, unit);
