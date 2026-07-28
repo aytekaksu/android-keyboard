@@ -48,9 +48,10 @@ private const val AUTOCORRECT_PLUGIN_TAG = "AutocorrectPlugin"
 /**
  * Base service for an external autocorrect provider.
  *
- * Suggestion work is cancelled when a newer request arrives or the host unbinds. Implementations
- * should cooperate with coroutine cancellation and must not start a background service, acquire a
- * wake lock, or schedule recurring work for an active typing session.
+ * Suggestion work is cancelled when a newer request arrives or the host unbinds. Provider-UI
+ * callbacks and their structured children are cancelled when that UI closes. Implementations
+ * should cooperate with coroutine cancellation and must not start a background service, acquire
+ * a wake lock, or schedule recurring work for an active typing session.
  */
 abstract class AutocorrectPluginService : Service() {
     private val operationErrorHandler = CoroutineExceptionHandler { _, error ->
@@ -62,13 +63,16 @@ abstract class AutocorrectPluginService : Service() {
     private var serviceScope = newServiceScope()
     @Volatile private var bindingCleanup: Job? = null
     @Volatile private var bindingReady: Job? = null
+    @Volatile private var pluginUiCleanup: Job? = null
     @Volatile private var activeBindingEpoch = 0L
     private var nextBindingEpoch = 0L
     private var sessionJob: Job? = null
     private var suggestionJob: Job? = null
+    private var activeIncomingHandler: IncomingHandler? = null
     @Volatile private var activeSessionId: Long? = null
     private var uiLanguageTags = emptyList<String>()
-    @Volatile private var uiClient: Messenger? = null
+    private val pluginUiStateGuard = Any()
+    private var uiClient: Messenger? = null
     private val predictionGuard = Mutex()
     private val uiMutationGuard = Mutex()
     private val callbackBindingEpoch = ThreadLocal<Long>()
@@ -88,7 +92,9 @@ abstract class AutocorrectPluginService : Service() {
         }
         val epoch = ++nextBindingEpoch
         activeBindingEpoch = epoch
-        val messenger = Messenger(IncomingHandler(epoch))
+        val handler = IncomingHandler(epoch)
+        activeIncomingHandler = handler
+        val messenger = Messenger(handler)
         userDictionaryClient.beginBinding(epoch, messenger)
         val previousCleanup = bindingCleanup
         bindingReady = lifecycleScope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -200,12 +206,16 @@ abstract class AutocorrectPluginService : Service() {
     /** Reads or writes a document selected through the host's system document picker. */
     protected open suspend fun onPluginUiDocument(document: AutocorrectPluginDocument): Boolean = false
 
-    /** Called when the last host-rendered provider page closes. */
+    /**
+     * Called after current and queued UI work is cancelled when the last host page closes.
+     * UI callbacks and their structured child coroutines must cooperate with cancellation.
+     */
     protected open suspend fun onPluginUiClosed() = Unit
 
     /**
      * Allows providers which retain sensitive personalization data to restrict compatible hosts.
      * The default accepts every host implementing the public protocol.
+     * A successful result is cached for that calling UID until the host unbinds.
      */
     protected open fun isHostAuthorized(packageNames: Set<String>): Boolean = true
 
@@ -214,10 +224,12 @@ abstract class AutocorrectPluginService : Service() {
      * keep the service alive; it is delivered only to an already-bound host.
      */
     protected fun publishPluginUi(ui: AutocorrectPluginUi) {
-        uiClient.sendSafely(
-            AutocorrectPluginContract.MSG_PLUGIN_UI_RESULT,
-            pluginUiResultBundle(0L, true, ui),
-        )
+        synchronized(pluginUiStateGuard) {
+            uiClient.sendSafely(
+                AutocorrectPluginContract.MSG_PLUGIN_UI_RESULT,
+                pluginUiResultBundle(0L, true, ui),
+            )
+        }
     }
 
     private fun newServiceScope() = CoroutineScope(
@@ -226,6 +238,8 @@ abstract class AutocorrectPluginService : Service() {
 
     private fun clearBinding(): Pair<Long, Job> {
         val epoch = activeBindingEpoch
+        activeIncomingHandler?.closePluginUi()
+        activeIncomingHandler = null
         activeBindingEpoch = 0L
         bindingReady?.cancel()
         bindingReady = null
@@ -234,7 +248,9 @@ abstract class AutocorrectPluginService : Service() {
         sessionJob?.cancel()
         sessionJob = null
         activeSessionId = null
-        uiClient = null
+        synchronized(pluginUiStateGuard) {
+            uiClient = null
+        }
         uiLanguageTags = emptyList()
         userDictionaryClient.detach()
         val bindingJob = serviceScope.coroutineContext[Job]!!
@@ -244,9 +260,11 @@ abstract class AutocorrectPluginService : Service() {
 
     private fun scheduleBindingCleanup(bindingJob: Job) {
         val previousCleanup = bindingCleanup
+        val pendingPluginUiCleanup = pluginUiCleanup
         bindingCleanup = lifecycleScope.launch {
             previousCleanup?.join()
             bindingJob.join()
+            pendingPluginUiCleanup?.join()
             uiMutationGuard.withLock {
                 predictionGuard.withLock {
                     runCatching { onHostUnboundCleanup() }.onFailure { error ->
@@ -260,11 +278,26 @@ abstract class AutocorrectPluginService : Service() {
     private inner class IncomingHandler(
         private val bindingEpoch: Long,
     ) : Handler(Looper.getMainLooper()) {
+        private val hostAuthorization = BindingHostAuthorization()
+        private val pluginUiLifetime = PluginUiLifetime(
+            serviceScope.coroutineContext[Job]!!,
+        )
+
         override fun handleMessage(message: Message) {
             val rejected =
                 bindingEpoch != activeBindingEpoch ||
-                !runCatching { isAuthorized(message) }.getOrDefault(false) ||
-                !userDictionaryClient.claimHost(message.sendingUid, message.replyTo)
+                !runCatching {
+                    hostAuthorization.accepts(
+                        uid = message.sendingUid,
+                        authorize = ::isAuthorized,
+                        claim = {
+                            userDictionaryClient.claimHost(
+                                message.sendingUid,
+                                message.replyTo,
+                            )
+                        },
+                    )
+                }.getOrDefault(false)
             if (rejected) {
                 rejectMessage(message)
                 return
@@ -417,10 +450,7 @@ abstract class AutocorrectPluginService : Service() {
                     )
                 }
                 AutocorrectPluginContract.MSG_PLUGIN_UI_CLOSED -> {
-                    enqueuePluginUiOperation {
-                        uiClient = null
-                        onPluginUiClosed()
-                    }
+                    closePluginUi()
                 }
                 AutocorrectPluginContract.MSG_HOST_USER_DICTIONARY_RESULT -> {
                     userDictionaryClient.complete(message.sendingUid, message.data)
@@ -443,19 +473,27 @@ abstract class AutocorrectPluginService : Service() {
 
         private fun enqueuePluginUiOperation(
             cleanup: () -> Unit = {},
-            operation: suspend () -> Unit,
+            operation: suspend (Job) -> Unit,
         ) {
             val ready = bindingReady
+            val uiReady = pluginUiCleanup
+            val lifetime = pluginUiLifetime.open()
             serviceScope.launch(
-                context = callbackBindingEpoch.asContextElement(bindingEpoch),
+                context = callbackBindingEpoch.asContextElement(bindingEpoch) + lifetime,
                 start = CoroutineStart.UNDISPATCHED,
             ) {
                 try {
                     ready?.join()
+                    uiReady?.join()
+                    if (!pluginUiLifetime.isCurrent(lifetime)) return@launch
                     uiMutationGuard.withLock {
                         yield()
-                        predictionGuard.withLock {
-                            operation()
+                        if (pluginUiLifetime.isCurrent(lifetime)) {
+                            predictionGuard.withLock {
+                                if (pluginUiLifetime.isCurrent(lifetime)) {
+                                    operation(lifetime)
+                                }
+                            }
                         }
                     }
                 } finally {
@@ -464,12 +502,50 @@ abstract class AutocorrectPluginService : Service() {
             }
         }
 
-        private fun isAuthorized(message: Message): Boolean {
-            if (message.sendingUid == Process.myUid()) return true
-            val packages = packageManager.getPackagesForUid(message.sendingUid)
+        fun closePluginUi() {
+            val closingLifetime = synchronized(pluginUiStateGuard) {
+                uiClient = null
+                pluginUiLifetime.invalidate()
+            } ?: return
+            val ready = bindingReady
+            val previousCleanup = pluginUiCleanup
+            pluginUiCleanup = lifecycleScope.launch(
+                context = callbackBindingEpoch.asContextElement(bindingEpoch),
+                start = CoroutineStart.UNDISPATCHED,
+            ) {
+                ready?.join()
+                previousCleanup?.join()
+                closingLifetime.join()
+                uiMutationGuard.withLock {
+                    yield()
+                    predictionGuard.withLock {
+                        onPluginUiClosed()
+                    }
+                }
+            }
+        }
+
+        private fun isAuthorized(uid: Int): Boolean {
+            if (uid == Process.myUid()) return true
+            val packages = packageManager.getPackagesForUid(uid)
                 ?.toSet()
                 .orEmpty()
             return packages.isNotEmpty() && isHostAuthorized(packages)
+        }
+
+        private fun runForCurrentPluginUiLifetime(
+            lifetime: Job,
+            operation: () -> Unit,
+        ): Boolean = synchronized(pluginUiStateGuard) {
+            if (
+                bindingEpoch != activeBindingEpoch ||
+                !pluginUiLifetime.isCurrent(lifetime)
+            ) {
+                false
+            } else {
+                operation()
+                true
+            }
         }
 
         private fun rejectMessage(message: Message) {
@@ -534,27 +610,68 @@ abstract class AutocorrectPluginService : Service() {
                 runCatching(cleanup)
                 return
             }
-            enqueuePluginUiOperation(cleanup) {
-                uiClient = replyTo
-                val (result, ui) = try {
-                    val operationResult = successful ?: operation()
-                    operationResult to onGetPluginUi(languageTags)
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (error: Exception) {
-                    Log.e(AUTOCORRECT_PLUGIN_TAG, "Provider UI operation failed", error)
-                    false to null
+            enqueuePluginUiOperation(cleanup) { lifetime ->
+                val activated = runForCurrentPluginUiLifetime(lifetime) {
+                    uiClient = replyTo
                 }
-                replyTo.sendSafely(
-                    AutocorrectPluginContract.MSG_PLUGIN_UI_RESULT,
-                    pluginUiResultBundle(
-                        requestId,
-                        result,
-                        ui,
-                    ),
-                )
+                if (activated) {
+                    val (result, ui) = try {
+                        val operationResult = successful ?: operation()
+                        operationResult to onGetPluginUi(languageTags)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        Log.e(AUTOCORRECT_PLUGIN_TAG, "Provider UI operation failed", error)
+                        false to null
+                    }
+                    runForCurrentPluginUiLifetime(lifetime) {
+                        replyTo.sendSafely(
+                            AutocorrectPluginContract.MSG_PLUGIN_UI_RESULT,
+                            pluginUiResultBundle(
+                                requestId,
+                                result,
+                                ui,
+                            ),
+                        )
+                    }
+                }
             }
         }
+    }
+}
+
+internal class BindingHostAuthorization {
+    private var authorizedUid: Int? = null
+
+    fun accepts(
+        uid: Int,
+        authorize: (Int) -> Boolean,
+        claim: () -> Boolean,
+    ): Boolean {
+        val currentUid = authorizedUid
+        if (currentUid != null) return currentUid == uid && claim()
+        if (!authorize(uid) || !claim()) return false
+        authorizedUid = uid
+        return true
+    }
+}
+
+internal class PluginUiLifetime(private val parent: Job) {
+    @Volatile private var job: Job? = null
+
+    fun open(): Job {
+        val current = job
+        if (current != null && current.isActive) return current
+        return SupervisorJob(parent).also { job = it }
+    }
+
+    fun isCurrent(candidate: Job) = candidate === job && candidate.isActive
+
+    fun invalidate(): Job? {
+        val invalidated = job ?: return null
+        job = null
+        invalidated.cancel()
+        return invalidated
     }
 }
 

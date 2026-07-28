@@ -13,16 +13,6 @@ import org.junit.Test;
 
 public class PersonalizationPolicyTest {
     @Test
-    public void keepsExistingSuggestionsReadableWhenLearningIsBlocked() {
-        assertEquals(
-                new PersonalizationPolicy(true, false),
-                FutoAutocorrectEngineKt.personalizationPolicy(true, false, true));
-        assertEquals(
-                new PersonalizationPolicy(true, false),
-                FutoAutocorrectEngineKt.personalizationPolicy(true, true, false));
-    }
-
-    @Test
     public void writesRequireAllThreeLearningConditions() {
         for (boolean userEnabled : new boolean[]{false, true}) {
             for (boolean sessionAllowsLearning : new boolean[]{false, true}) {

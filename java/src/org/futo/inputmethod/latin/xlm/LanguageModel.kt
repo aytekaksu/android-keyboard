@@ -1,18 +1,12 @@
 package org.futo.inputmethod.latin.xlm
 
-import android.content.Context
-import android.util.Log
 import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.newSingleThreadContext
 import kotlinx.coroutines.withContext
 import org.futo.inputmethod.latin.NgramContext
-import org.futo.inputmethod.latin.SuggestedWords
 import org.futo.inputmethod.latin.SuggestedWords.SuggestedWordInfo
 import org.futo.inputmethod.latin.common.ComposedData
-import org.futo.inputmethod.latin.settings.SettingsValuesForSuggestion
 import org.futo.inputmethod.latin.utils.JniUtils
-import java.util.Arrays
 import java.util.Locale
 
 @OptIn(DelicateCoroutinesApi::class)
@@ -28,12 +22,11 @@ data class ComposeInfo(
 )
 
 class LanguageModel(
-    val applicationContext: Context,
     val modelInfoLoader: ModelInfoLoader,
     val locale: Locale
 ) {
     private suspend fun loadModel() = withContext(LanguageModelScope) {
-        withContext(Dispatchers.Main) { JniUtils.loadNativeLibrary() }
+        JniUtils.loadNativeLibrary()
 
         val modelPath = modelInfoLoader.path.absolutePath
         mNativeState = openNative(modelPath)
@@ -178,69 +171,8 @@ class LanguageModel(
         return context
     }
 
-    suspend fun rescoreSuggestions(
-        suggestedWords: SuggestedWords,
-        composedData: ComposedData,
-        ngramContext: NgramContext,
-        personalDictionary: List<String>,
-    ): List<SuggestedWordInfo>? = withContext(LanguageModelScope) {
-        if (mNativeState == 0L) {
-            loadModel()
-            Log.d("LanguageModel", "Exiting because mNativeState == 0")
-            return@withContext null
-        }
-
-        var composeInfo = withContext(Dispatchers.Main) {
-            getComposeInfo(composedData)
-        }
-
-        if(composeInfo.xCoords.size != composeInfo.yCoords.size) {
-            Log.w("LanguageModel", "Dropping composeInfo in rescoreSuggestions with mismatching coords size")
-            return@withContext null
-        }
-
-        var context = getContext(composeInfo, ngramContext)
-
-        composeInfo = safeguardComposeInfo(composeInfo)
-        context = safeguardContext(context)
-        context = addPersonalDictionary(context, personalDictionary)
-
-        val wordStrings = suggestedWords.mSuggestedWordInfoList.map { it.mWord }.toTypedArray()
-        val wordScoresInput = suggestedWords.mSuggestedWordInfoList.map { it.mScore }.toTypedArray().toIntArray()
-        val wordScoresOutput = IntArray(wordScoresInput.size) { 0 }
-
-        rescoreSuggestionsNative(
-            mNativeState,
-            context,
-
-            wordStrings,
-            wordScoresInput,
-
-            wordScoresOutput
-        )
-
-        return@withContext suggestedWords.mSuggestedWordInfoList.mapIndexed { index, suggestedWordInfo ->
-            Log.i("LanguageModel", "Suggestion [${suggestedWordInfo.word}] reweighted, from ${suggestedWordInfo.mScore} to ${wordScoresOutput[index]}")
-            SuggestedWordInfo(
-                suggestedWordInfo.word,
-                suggestedWordInfo.mPrevWordsContext,
-
-                wordScoresOutput[index],
-                suggestedWordInfo.mKindAndFlags,
-
-                suggestedWordInfo.mSourceDict,
-                suggestedWordInfo.mIndexOfTouchPointOfSecondWord,
-
-                suggestedWordInfo.mAutoCommitFirstWordConfidence
-            )
-        }.sortedByDescending { it.mScore }
-    }
-
-    private suspend fun loadModelIfNeeded() = if(mNativeState == 0L) {
-        loadModel()
-        false
-    } else {
-        true
+    private suspend fun loadModelIfNeeded() {
+        if (mNativeState == 0L) loadModel()
     }
 
     private fun getSuggestionsInternal(
@@ -335,7 +267,7 @@ class LanguageModel(
         personalDictionary: List<String>,
         bannedWords: Array<String>
     ): ArrayList<SuggestedWordInfo>? = withContext(LanguageModelScope) {
-        if(!loadModelIfNeeded()) return@withContext null
+        loadModelIfNeeded()
         if(composedData.mIsBatchMode) return@withContext null
         var composeInfo = getComposeInfo(composedData)
         var context = getContext(composeInfo, ngramContext)
@@ -376,15 +308,5 @@ class LanguageModel(
         bannedWords: Array<String>,  // outputs
         outStrings: Array<String?>,
         outProbs: FloatArray
-    )
-
-    private external fun rescoreSuggestionsNative(
-        state: Long,
-        context: String,
-
-        inSuggestedWords: Array<String>,
-        inSuggestedScores: IntArray,
-
-        outSuggestedScores: IntArray
     )
 }

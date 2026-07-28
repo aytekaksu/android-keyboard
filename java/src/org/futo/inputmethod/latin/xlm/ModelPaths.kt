@@ -2,7 +2,6 @@ package org.futo.inputmethod.latin.xlm
 
 import android.content.Context
 import android.net.Uri
-import android.provider.OpenableColumns
 import android.util.Log
 import androidx.annotation.Keep
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -66,112 +65,22 @@ object ModelPaths {
     private var baseModelResourceSize: Long? = null
 
     fun exportModel(context: Context, uri: Uri, file: File) {
-        context.contentResolver.openOutputStream(uri)!!.use { outputStream ->
-            file.inputStream().use { inputStream ->
-                var read = 0
-                val bytes = ByteArray(1024)
-                while (inputStream.read(bytes).also { read = it } != -1) {
-                    outputStream.write(bytes, 0, read)
-                }
-            }
+        context.contentResolver.openOutputStream(uri)!!.use { output ->
+            file.inputStream().use { it.copyTo(output) }
         }
     }
 
-
-    private val supportedFeatures = setOf(
-        "base_v1",
-        "inverted_space",
-        "xbu_char_autocorrect_v1",
-        "lora_finetunable_v1",
-        "xc0_swipe_typing_v1",
-        "char_embed_mixing_v1",
-        "experiment_linear_208_209_210",
-    )
-
-    fun importModel(context: Context, uri: Uri): File {
-        val modelDirectory = getModelDirectory(context)
-
-        val fileName = context.contentResolver.query(uri, null, null, null, null, null).use {
-            if(it != null && it.moveToFirst()) {
-                val colIdx = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (colIdx != -1) {
-                    it.getString(colIdx)
-                } else {
-                    null
-                }
-            } else {
-                null
-            }
-        } ?: throw IllegalArgumentException("Model file data could not be obtained")
-
-
-        val file = File(modelDirectory, fileName)
-        if(file.exists()) {
-            throw IllegalArgumentException("Model with the name \"${file.name}\" already exists, refusing to replace!")
-        }
-
-        if(file.extension != "gguf") {
-            throw IllegalArgumentException("File's extension must equal 'gguf'")
-        }
-
-        context.contentResolver.openInputStream(uri)?.use { inputStream ->
-            var read = 0
-            val bytes = ByteArray(1024)
-
-            read = inputStream.read(bytes)
-
-            // Sanity check to make sure it's valid
-            if(read < 4
-                || bytes[0] != 'G'.code.toByte()
-                || bytes[1] != 'G'.code.toByte()
-                || bytes[2] != 'U'.code.toByte()
-                || bytes[3] != 'F'.code.toByte()
-            ) {
-                throw IllegalArgumentException("File \"${file.name}\" does not appear to be a GGUF file")
-            }
-
-            file.outputStream().use { outputStream ->
-                while (read != -1) {
-                    outputStream.write(bytes, 0, read)
-                    read = inputStream.read(bytes)
-                }
-            }
-        }
-
-        // Attempt to load metadata here and check if it can even load
-        val details = ModelInfoLoader(
-            name = file.nameWithoutExtension,
-            path = file
-        ).loadDetails()
-
-        if(details == null) {
-            file.delete()
-            throw IllegalArgumentException("Failed to load metadata, file \"${file.name}\" may not be a valid GGUF file")
-        }
-
-        // Check that the model has any features at all
-        if(details.features.isEmpty()) {
-            file.delete()
-            throw IllegalArgumentException("Model is a valid GGUF file, but does not support use as a keyboard language model (it lacks KeyboardLM metadata).\n\nIf you are a model creator: models must support specific features and prompt formats; arbitrary gguf models are unsupported at this time. Refer to the model creation documentation for more details.")
-        }
-
-        // Check that we support all features from this model
-        val unsupportedFeatures = details.features.filter {
-            !(supportedFeatures.contains(it) || it.startsWith("opt_") || it.startsWith("_"))
-        }
-        if(unsupportedFeatures.isNotEmpty()) {
-            file.delete()
-            throw IllegalArgumentException("Model has the following unknown features: [${unsupportedFeatures.joinToString(separator=", ")}]\nYou probably need to update FUTO Keyboard.")
-        }
-
-        return file
-    }
 
     suspend fun signalReloadModels() {
         modelOptionsUpdated.emit(Unit)
     }
 
-    suspend fun updateModelOption(context: Context, key: String, value: File) {
+    suspend fun updateModelOption(
+        context: Context,
+        key: String,
+        value: File,
+        notifyListeners: Boolean = true,
+    ) {
         if(!value.absolutePath.startsWith(context.filesDir.absolutePath)) {
             throw IllegalArgumentException("Model path ${value.absolutePath} does not start with filesDir path ${context.filesDir.absolutePath}")
         }
@@ -184,7 +93,7 @@ object ModelPaths {
 
         context.setSetting(MODEL_OPTION_KEY, options)
 
-        signalReloadModels()
+        if (notifyListeners) signalReloadModels()
     }
 
     suspend fun getModelOptions(context: Context): Map<String, ModelInfoLoader> {
@@ -193,10 +102,14 @@ object ModelPaths {
         val options = context.getSetting(MODEL_OPTION_KEY)
 
         val modelOptionsByLanguage = hashMapOf<String, ModelInfoLoader>()
-        options.forEach {
-            val splits = it.split(":", limit = 2)
-            val language = splits[0]
-            var modelName = splits[1]
+        options.forEach { option ->
+            val separator = option.indexOf(':')
+            if (separator <= 0 || separator == option.lastIndex) {
+                Log.w("ModelPaths", "Ignoring malformed model option: $option")
+                return@forEach
+            }
+            val language = option.substring(0, separator)
+            var modelName = option.substring(separator + 1)
 
             if(modelName == DEPRECATED_MODEL_NAME) {
                 modelName = BASE_MODEL_NAME

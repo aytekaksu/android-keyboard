@@ -1132,16 +1132,21 @@ internal class FutoHostedSettings(
         }
         val file = imported.first
         val details = imported.second
+        invalidateModelDetailsCache()
         val supportsSelectedLanguage = details.languages.any {
             locale(it).language == targetLanguage
         }
         selectedModelName = file.name
         if (supportsSelectedLanguage) {
-            ModelPaths.updateModelOption(context, targetLanguage, file)
+            ModelPaths.updateModelOption(
+                context,
+                targetLanguage,
+                file,
+                notifyListeners = false,
+            )
             documentSuccessStatus =
                 "Imported ${file.name} and selected it for ${languageLabel(modelLanguage)}."
         } else {
-            ModelPaths.signalReloadModels()
             documentSuccessStatus = "Imported ${file.name}. Its declared languages " +
                 "(${details.languages.joinToString().ifBlank { "none" }}) do not include " +
                 "${languageLabel(modelLanguage)}, so the current default was kept."
@@ -1235,7 +1240,12 @@ internal class FutoHostedSettings(
                 ?.any { locale(it).language == language } == true
         }.getOrDefault(false)
         if (!supported) return false
-        ModelPaths.updateModelOption(context, language, model.path)
+        ModelPaths.updateModelOption(
+            context,
+            language,
+            model.path,
+            notifyListeners = false,
+        )
         reload(modelsChanged = true)
         return true
     }
@@ -1257,6 +1267,7 @@ internal class FutoHostedSettings(
             ?: return false
         val selectedBaseName = file.nameWithoutExtension
         if (!withContext(Dispatchers.IO) { file.delete() }) return false
+        invalidateModelDetailsCache()
         ModelPaths.ensureDefaultModelExists(context)
         val modelOptions = setting(MODEL_OPTION_KEY).mapNotNullTo(mutableSetOf()) { option ->
             val language = option.substringBefore(':')
@@ -1267,7 +1278,6 @@ internal class FutoHostedSettings(
             }
         }
         context.setSettingAndAwaitCache(MODEL_OPTION_KEY, modelOptions)
-        ModelPaths.signalReloadModels()
         selectedModelName = "$BASE_MODEL_NAME.gguf"
         reload(modelsChanged = true)
         return true
@@ -1692,14 +1702,14 @@ internal class FutoHostedSettings(
             ?.substringAfterLast('/')
             ?.replace(UNSAFE_FILE_CHARS, "_")
             ?.trim('.', '_')
-            ?.take(MAX_FILE_NAME_CHARS)
             ?.takeIf(String::isNotBlank)
             ?: fallback
-        return if (sanitized.endsWith(extension, ignoreCase = true)) {
-            sanitized.dropLast(extension.length) + extension
+        val baseName = if (sanitized.endsWith(extension, ignoreCase = true)) {
+            sanitized.dropLast(extension.length)
         } else {
-            "$sanitized$extension"
+            sanitized
         }
+        return baseName.take(MAX_FILE_NAME_CHARS - extension.length) + extension
     }
 
     private suspend fun copyDocument(
@@ -1753,6 +1763,11 @@ internal class FutoHostedSettings(
             modelDetailsCache = runCatching { model.loadDetails() }.getOrNull()
         }
         return modelDetailsCache
+    }
+
+    private fun invalidateModelDetailsCache() {
+        modelDetailsCacheKey = null
+        modelDetailsCache = null
     }
 
     private fun ModelInfo.isProviderSupported(): Boolean =

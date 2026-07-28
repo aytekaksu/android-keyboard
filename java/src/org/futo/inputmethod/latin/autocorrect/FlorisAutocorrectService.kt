@@ -196,7 +196,7 @@ class FlorisAutocorrectService : AutocorrectPluginService() {
         candidateId: String,
         acceptanceKind: AutocorrectAcceptanceKind,
     ) {
-        engine.accepted(sessionId, candidateId, acceptanceKind)
+        engine.accepted(sessionId, candidateId)
     }
 
     override suspend fun onSuggestionReverted(sessionId: Long, candidateId: String) {
