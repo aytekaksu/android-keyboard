@@ -67,7 +67,7 @@ abstract class AutocorrectPluginService : Service() {
     @Volatile private var activeBindingEpoch = 0L
     private var nextBindingEpoch = 0L
     private var sessionJob: Job? = null
-    private var suggestionJob: Job? = null
+    private val suggestionJobs = SuggestionJobLifetime()
     private var activeIncomingHandler: IncomingHandler? = null
     @Volatile private var activeSessionId: Long? = null
     private var uiLanguageTags = emptyList<String>()
@@ -243,8 +243,7 @@ abstract class AutocorrectPluginService : Service() {
         activeBindingEpoch = 0L
         bindingReady?.cancel()
         bindingReady = null
-        suggestionJob?.cancel()
-        suggestionJob = null
+        suggestionJobs.clear()
         sessionJob?.cancel()
         sessionJob = null
         activeSessionId = null
@@ -305,7 +304,7 @@ abstract class AutocorrectPluginService : Service() {
             when (message.what) {
                 AutocorrectPluginContract.MSG_START_SESSION -> {
                     val session = AutocorrectSession.fromBundle(message.data)
-                    suggestionJob?.cancel()
+                    suggestionJobs.clear()
                     activeSessionId = session.sessionId
                     enqueueSessionOperation {
                         onStartSession(session)
@@ -313,17 +312,24 @@ abstract class AutocorrectPluginService : Service() {
                 }
                 AutocorrectPluginContract.MSG_SUGGEST -> {
                     val request = AutocorrectRequest.fromBundle(message.data)
-                    if (request.sessionId != activeSessionId) return
                     val replyTo = message.replyTo
-                    suggestionJob?.cancel()
+                    if (request.requestId <= 0L || request.sessionId != activeSessionId) {
+                        replyTo.sendUnhandledSuggestion(request.requestId)
+                        return
+                    }
+                    suggestionJobs.begin(request.requestId)
                     val sessionReady = sessionJob
                     val ready = bindingReady
-                    suggestionJob = serviceScope.launch(
+                    val job = serviceScope.launch(
                         callbackBindingEpoch.asContextElement(bindingEpoch),
                     ) {
                         ready?.join()
                         sessionReady?.join()
-                        if (request.sessionId != activeSessionId) return@launch
+                        if (!suggestionJobs.isCurrent(request.requestId)) return@launch
+                        if (request.sessionId != activeSessionId) {
+                            replyTo.sendUnhandledSuggestion(request.requestId)
+                            return@launch
+                        }
                         val result = try {
                             predictionGuard.withLock { onSuggestResult(request) }
                         } catch (error: CancellationException) {
@@ -332,11 +338,13 @@ abstract class AutocorrectPluginService : Service() {
                             Log.e(AUTOCORRECT_PLUGIN_TAG, "Suggestion request failed", error)
                             AutocorrectSuggestionResult.Unhandled
                         }
+                        if (!suggestionJobs.isCurrent(request.requestId)) return@launch
                         replyTo.sendSafely(
                             AutocorrectPluginContract.MSG_SUGGESTIONS,
                             suggestionResultToBundle(request.requestId, result),
                         )
                     }
+                    suggestionJobs.attach(request.requestId, job)
                 }
                 AutocorrectPluginContract.MSG_ACCEPTED -> {
                     val sessionId = message.data.getLong(Keys.SESSION_ID)
@@ -395,7 +403,7 @@ abstract class AutocorrectPluginService : Service() {
                         return
                     }
                     val finalRequest = finalRequestFromFinishSessionBundle(message.data, sessionId)
-                    suggestionJob?.cancel()
+                    suggestionJobs.clear()
                     activeSessionId = null
                     enqueueSessionOperation {
                         try {
@@ -409,7 +417,7 @@ abstract class AutocorrectPluginService : Service() {
                     }
                 }
                 AutocorrectPluginContract.MSG_CANCEL -> {
-                    suggestionJob?.cancel()
+                    cancellationRequestIdFromBundle(message.data)?.let(suggestionJobs::cancel)
                 }
                 AutocorrectPluginContract.MSG_TEXT_EVENT -> {
                     val event = AutocorrectTextEvent.fromBundle(message.data) ?: return
@@ -675,6 +683,47 @@ internal class PluginUiLifetime(private val parent: Job) {
     }
 }
 
+internal class SuggestionJobLifetime {
+    private var activeRequestId: Long? = null
+    private var activeJob: Job? = null
+
+    @Synchronized
+    fun begin(requestId: Long) {
+        require(requestId > 0L)
+        activeJob?.cancel()
+        activeRequestId = requestId
+        activeJob = null
+    }
+
+    @Synchronized
+    fun attach(requestId: Long, job: Job) {
+        if (activeRequestId == requestId && activeJob == null) {
+            activeJob = job
+        } else {
+            job.cancel()
+        }
+    }
+
+    @Synchronized
+    fun isCurrent(requestId: Long) = activeRequestId == requestId
+
+    @Synchronized
+    fun cancel(requestId: Long): Boolean {
+        if (activeRequestId != requestId) return false
+        activeRequestId = null
+        activeJob?.cancel()
+        activeJob = null
+        return true
+    }
+
+    @Synchronized
+    fun clear() {
+        activeRequestId = null
+        activeJob?.cancel()
+        activeJob = null
+    }
+}
+
 private class HostUserDictionaryClient(
     private val callbackBindingEpoch: ThreadLocal<Long>,
 ) : AutocorrectUserDictionaryReader {
@@ -897,4 +946,11 @@ private fun Messenger?.sendSafely(what: Int, data: android.os.Bundle) {
     } catch (_: RemoteException) {
         // The host disappeared; Android will shortly unbind and destroy this service.
     }
+}
+
+private fun Messenger?.sendUnhandledSuggestion(requestId: Long) {
+    sendSafely(
+        AutocorrectPluginContract.MSG_SUGGESTIONS,
+        suggestionResultToBundle(requestId, AutocorrectSuggestionResult.Unhandled),
+    )
 }
