@@ -27,7 +27,7 @@ import android.os.Bundle
 object AutocorrectPluginContract {
     const val ACTION_BIND_PROVIDER = "org.florisboard.autocorrect.api.action.BIND_PROVIDER"
     const val META_PROTOCOL_VERSION = "org.florisboard.autocorrect.api.PROTOCOL_VERSION"
-    const val PROTOCOL_VERSION = 4
+    const val PROTOCOL_VERSION = 5
 
     const val MSG_START_SESSION = 1
     const val MSG_SUGGEST = 2
@@ -376,6 +376,22 @@ fun removalRequestBundle(sessionId: Long, requestId: Long, candidateId: String) 
     candidateEventBundle(sessionId, candidateId).apply {
         putLong(Keys.REQUEST_ID, requestId)
     }
+
+/**
+ * Cancels only the suggestion request identified by [requestId].
+ *
+ * Request-scoped cancellation prevents a delayed cancel message for an older request from
+ * cancelling newer provider work.
+ */
+fun cancellationBundle(requestId: Long) = Bundle().apply {
+    require(requestId > 0L)
+    putLong(Keys.REQUEST_ID, requestId)
+}
+
+@Suppress("DEPRECATION")
+internal fun cancellationRequestIdFromBundle(bundle: Bundle): Long? {
+    return (bundle.get(Keys.REQUEST_ID) as? Long)?.takeIf { it > 0L }
+}
 
 /** Legacy form for hosts which cannot supply an authoritative final editor snapshot. */
 fun finishSessionBundle(sessionId: Long) = Bundle().apply {

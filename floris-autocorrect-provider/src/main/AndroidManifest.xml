@@ -16,7 +16,7 @@
             </intent-filter>
             <meta-data
                 android:name="org.florisboard.autocorrect.api.PROTOCOL_VERSION"
-                android:value="4" />
+                android:value="5" />
         </service>
     </application>
 </manifest>
